@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"github.com/wiloon/pingd-tcp-proxy/utils"
-	"github.com/wiloon/pingd-tcp-proxy/utils/logger"
+	"github.com/wiloon/w-tcp-proxy/utils"
+	"github.com/wiloon/w-tcp-proxy/utils/logger"
 	"net"
 	"sync"
 )
@@ -28,8 +28,14 @@ type proxyConn struct {
 }
 
 func (pc *proxyConn) Close() {
-	pc.InboundConn.Close()
-	pc.OutboundConn.Close()
+	err := pc.InboundConn.Close()
+	if err != nil {
+		logger.Errorf("failed to close conn: %v", pc.InboundConn.RemoteAddr().String())
+	}
+	err = pc.OutboundConn.Close()
+	if err != nil {
+		logger.Errorf("failed to close conn: %v", pc.InboundConn.RemoteAddr().String())
+	}
 }
 
 var proxyConnections = &sync.Map{}

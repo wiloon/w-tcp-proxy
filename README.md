@@ -1,3 +1,3 @@
-# pingd-tcp-proxy
+# w-tcp-proxy
 
 TCP proxy with epoll

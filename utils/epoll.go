@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"github.com/wiloon/pingd-tcp-proxy/utils/logger"
+	"github.com/wiloon/w-tcp-proxy/utils/logger"
 	"golang.org/x/sys/unix"
 	"net"
 	"reflect"
@@ -38,7 +38,7 @@ func (e *Epoll) Add(conn net.Conn) error {
 	defer e.Lock.Unlock()
 	e.Connections[fd] = conn
 	if len(e.Connections)%100 == 0 {
-		logger.Printf("total number of connections: %v", len(e.Connections))
+		logger.Infof("total number of connections: %v", len(e.Connections))
 	}
 	return nil
 }
@@ -53,7 +53,7 @@ func (e *Epoll) Remove(conn net.Conn) error {
 	defer e.Lock.Unlock()
 	delete(e.Connections, fd)
 	if len(e.Connections)%100 == 0 {
-		logger.Printf("total number of connections: %v", len(e.Connections))
+		logger.Infof("total number of connections: %v", len(e.Connections))
 	}
 	return nil
 }

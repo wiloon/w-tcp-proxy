@@ -2,7 +2,7 @@ package utils
 
 import (
 	"fmt"
-	"github.com/wiloon/pingd-tcp-proxy/utils/logger"
+	"github.com/wiloon/w-tcp-proxy/utils/logger"
 	"os"
 	"os/signal"
 	"syscall"

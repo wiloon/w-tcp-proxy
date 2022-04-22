@@ -2,11 +2,11 @@ package utils
 
 import (
 	"fmt"
-	"github.com/wiloon/pingd-core/logger"
+	"github.com/wiloon/w-tcp-proxy/utils/logger"
 	"syscall"
 )
 
-func GetRLimit() syscall.Rlimit {
+func _() syscall.Rlimit {
 	var rLimit syscall.Rlimit
 	err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit)
 	if err != nil {
