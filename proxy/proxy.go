@@ -109,8 +109,31 @@ func (p *Proxy) proxy(ep *utils.Epoll, ch chan *connData) {
 
 			connFd := utils.SocketFD(conn)
 
-			cd := &connData{Fd: connFd, Data: nil}
-			//logger.Debugf("read in: %s", cd.String())
+			var buf = make([]byte, 4096)
+			n, readErr := conn.Read(buf)
+			if readErr != nil {
+				logger.Errorf("failed to read conn: %s, err: %v", conn.RemoteAddr().String(), readErr)
+				if err := ep.Remove(conn); err != nil {
+					logger.Errorf("failed to remove %v", err)
+				}
+
+				if tmp, ok := p.Connections.Load(connFd); ok {
+					pc := tmp.(*proxyConn)
+					if connFd == pc.InboundFd {
+						if err := ep.Remove(pc.OutboundConn); err != nil {
+							logger.Errorf("failed to remove %v", err)
+						}
+						pc.OutboundConn.Close()
+					}
+				}
+
+				conn.Close()
+
+				continue
+			}
+
+			cd := &connData{Fd: connFd, Data: buf[:n]}
+			// logger.Debugf("read in: %s", cd.String())
 			ch <- cd
 			logger.Debugf("conn active fd: %d", connFd)
 		}
