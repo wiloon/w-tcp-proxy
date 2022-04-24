@@ -177,9 +177,9 @@ func (p *Proxy) proxy(ep *utils.Epoll, ch chan *connData) {
 			}
 
 			cd := &connData{Fd: connFd, Data: buf[:n]}
-			logger.Debugf("read in, size: %d, %s", n, cd.String())
+			// logger.Debugf("read in, size: %d, %s", n, cd.String())
 			ch <- cd
-			logger.Debugf("conn active fd: %d", connFd)
+			logger.Debugf("conn active fd: %d, size: %d", connFd, n)
 		}
 	}
 }

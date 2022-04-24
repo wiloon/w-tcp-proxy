@@ -12,7 +12,8 @@ var (
 	// targetAddress = flag.String("backend", "127.0.0.1:3000", "backend address")
 	// targetAddress = flag.String("backend", "192.168.122.1:22", "backend address")
 	// targetAddress = flag.String("backend", "10.61.20.6:22", "backend address")
-	targetAddress = flag.String("backend", "10.61.20.6:22", "backend address")
+	// targetAddress = flag.String("backend", "192.168.50.100:22", "backend address")
+	targetAddress = flag.String("backend", "192.168.50.100:22", "backend address")
 )
 
 func main() {
