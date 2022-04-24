@@ -1,7 +1,8 @@
 package proxy
 
 import (
-	"bufio"
+	"encoding/hex"
+	"fmt"
 	"github.com/wiloon/w-tcp-proxy/utils"
 	"github.com/wiloon/w-tcp-proxy/utils/logger"
 	"net"
@@ -13,20 +14,28 @@ type Proxy struct {
 	BackendAddress string
 	Epoll          *utils.Epoll
 	Connections    *sync.Map
-	split          bufio.SplitFunc
+	split          SplitFunc
 }
 
 type proxyConn struct {
 	InboundFd       int
 	InboundConn     net.Conn
-	InboundScanner  *bufio.Scanner
+	InboundScanner  *Scanner
 	OutboundFd      int
 	OutboundConn    net.Conn
-	OutboundScanner *bufio.Scanner
+	OutboundScanner *Scanner
+}
+
+func (pc *proxyConn) GetTargetConn(fd int) net.Conn {
+	if fd == pc.InboundFd {
+		return pc.OutboundConn
+	} else if fd == pc.OutboundFd {
+		return pc.InboundConn
+	}
+	return nil
 }
 
 func (pc *proxyConn) Close() {
-
 	err := pc.InboundConn.Close()
 	if err != nil {
 		logger.Errorf("failed to close conn: %v", pc.InboundConn.RemoteAddr().String())
@@ -37,9 +46,37 @@ func (pc *proxyConn) Close() {
 	}
 }
 
+func (pc *proxyConn) appendBuf(fd int, data []byte) {
+	if fd == pc.InboundFd {
+		pc.InboundScanner.appendBuf(data)
+	} else {
+		pc.OutboundScanner.appendBuf(data)
+	}
+}
+
+func (pc *proxyConn) Scan(fd int) bool {
+	if fd == pc.InboundFd {
+		return pc.InboundScanner.Scan()
+	} else {
+		return pc.OutboundScanner.Scan()
+	}
+}
+
+func (pc *proxyConn) Bytes(fd int) []byte {
+	if fd == pc.InboundFd {
+		return pc.InboundScanner.Bytes()
+	} else {
+		return pc.OutboundScanner.Bytes()
+	}
+}
+
 type connData struct {
 	Fd   int
 	Data []byte
+}
+
+func (c *connData) String() string {
+	return fmt.Sprintf("fd: %d, data: %s", c.Fd, hex.EncodeToString(c.Data))
 }
 
 func (p *Proxy) Start() {
@@ -78,7 +115,16 @@ func (p *Proxy) Start() {
 			logger.Infof("proxy, inbound: %s>%s, fd: %d, outbound: %s>%s, fd: %d",
 				sourceConn.RemoteAddr().String(), sourceConn.LocalAddr().String(), sourceConnFd, targetConn.LocalAddr().String(), targetConn.RemoteAddr().String(), targetConnFd)
 
-			pc := &proxyConn{InboundFd: sourceConnFd, InboundConn: sourceConn, OutboundFd: targetConnFd, OutboundConn: targetConn}
+			pc := &proxyConn{
+				InboundFd:       sourceConnFd,
+				InboundConn:     sourceConn,
+				InboundScanner:  NewScanner(make([]byte, 4096)),
+				OutboundFd:      targetConnFd,
+				OutboundConn:    targetConn,
+				OutboundScanner: NewScanner(make([]byte, 4096)),
+			}
+			pc.InboundScanner.split = p.split
+			pc.OutboundScanner.split = p.split
 			p.Connections.Store(sourceConnFd, pc)
 			p.Connections.Store(targetConnFd, pc)
 
@@ -126,21 +172,19 @@ func (p *Proxy) proxy(ep *utils.Epoll, ch chan *connData) {
 						pc.OutboundConn.Close()
 					}
 				}
-
 				conn.Close()
-
 				continue
 			}
 
 			cd := &connData{Fd: connFd, Data: buf[:n]}
-			// logger.Debugf("read in: %s", cd.String())
+			logger.Debugf("read in, size: %d, %s", n, cd.String())
 			ch <- cd
 			logger.Debugf("conn active fd: %d", connFd)
 		}
 	}
 }
 
-func (p *Proxy) Split(split bufio.SplitFunc) {
+func (p *Proxy) Split(split SplitFunc) {
 	p.split = split
 }
 
@@ -156,60 +200,35 @@ func NewProxy(listenPort, backendAddress string) *Proxy {
 func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 	for {
 		cd := <-ch
-		if tmpConn, ok := connMap.Load(cd.Fd); ok {
-			pc := tmpConn.(*proxyConn)
-
-			var targetConn net.Conn
-			var targetFd int
-
-			if cd.Fd == pc.InboundFd {
-
-				targetConn = pc.OutboundConn
-				targetFd = pc.OutboundFd
-				if pc.InboundScanner == nil {
-					pc.InboundScanner = bufio.NewScanner(pc.InboundConn)
-					pc.InboundScanner.Split(p.split)
-				}
-				for pc.InboundScanner.Scan() {
-					stringProtocolBytes := pc.InboundScanner.Bytes()
-					logger.Debugf("scan loop, data size: %d", len(stringProtocolBytes))
-					if stringProtocolBytes == nil {
-						continue
-					}
-					write, err := targetConn.Write(stringProtocolBytes)
-					if err != nil {
-						logger.Errorf("failed to write :%v", err)
-						return
-					}
-					logger.Debugf("write data %d>%d, size: %d", cd.Fd, targetFd, write)
-					//logger.Debugf("write out: %s", cd.String())
-				}
-
-			} else {
-				targetConn = pc.InboundConn
-				targetFd = pc.InboundFd
-				if pc.OutboundScanner == nil {
-					pc.OutboundScanner = bufio.NewScanner(pc.OutboundConn)
-					pc.OutboundScanner.Split(p.split)
-				}
-				for pc.OutboundScanner.Scan() {
-					stringProtocolBytes := pc.OutboundScanner.Bytes()
-					if stringProtocolBytes == nil {
-						continue
-					}
-					write, err := targetConn.Write(stringProtocolBytes)
-					if err != nil {
-						logger.Errorf("failed to write :%v", err)
-						return
-					}
-					logger.Debugf("write data %d>%d, size: %d", cd.Fd, targetFd, write)
-					//logger.Debugf("write out: %s", cd.String())
-				}
-			}
-
-		} else {
-			logger.Warnf("target conn not found")
+		// find conn
+		conn, ok := connMap.Load(cd.Fd)
+		if !ok {
+			continue
 		}
-		logger.Debugf("consume loop end.")
+		pConn := conn.(*proxyConn)
+
+		// append data to buffer
+		pConn.appendBuf(cd.Fd, cd.Data)
+		targetConn := pConn.GetTargetConn(cd.Fd)
+		if targetConn == nil {
+			logger.Warnf("target conn not found")
+			continue
+		}
+
+		// scan
+		for pConn.Scan(cd.Fd) {
+			bytes := pConn.Bytes(cd.Fd)
+			if len(bytes) == 0 {
+				break
+			}
+			// send token
+			write, err := targetConn.Write(bytes)
+			if err != nil {
+				logger.Errorf("failed to write err: %v", err)
+				return
+			}
+			logger.Debugf("write to conn: %s, bytes: %d", targetConn.RemoteAddr().String(), write)
+		}
 	}
+	logger.Debugf("consume loop end.")
 }
