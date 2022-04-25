@@ -13,13 +13,14 @@ var (
 	// targetAddress = flag.String("backend", "192.168.122.1:22", "backend address")
 	// targetAddress = flag.String("backend", "10.61.20.6:22", "backend address")
 	// targetAddress = flag.String("backend", "192.168.50.100:22", "backend address")
-	targetAddress = flag.String("backend", "192.168.122.1:22", "backend address")
+	targetAddress = flag.String("backend", "10.61.20.6:4100", "backend address")
 )
 
 func main() {
 	flag.Parse()
 	p := proxy.NewProxy(*listenPort, *targetAddress)
 	p.Split(split0)
+	p.TokenHandler(tkHandler)
 	p.Start()
 
 	utils.WaitSignals(func() {
@@ -30,4 +31,8 @@ func main() {
 func split0(data []byte, eof bool) (advance int, token []byte, err error) {
 	token = data
 	return len(data), token, err
+}
+
+func tkHandler(token []byte) {
+	logger.Debugf("token: %s", string(token))
 }

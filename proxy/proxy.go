@@ -9,12 +9,15 @@ import (
 	"sync"
 )
 
+type TokenHandlerFunc func(token []byte)
+
 type Proxy struct {
 	ListenPort     string
 	BackendAddress string
 	Epoll          *utils.Epoll
 	Connections    *sync.Map
 	split          SplitFunc
+	tokenHandler   TokenHandlerFunc
 }
 
 type proxyConn struct {
@@ -221,6 +224,7 @@ func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 			if len(bytes) == 0 {
 				break
 			}
+			p.tokenHandler(bytes)
 			// send token
 			write, err := targetConn.Write(bytes)
 			if err != nil {
@@ -231,4 +235,8 @@ func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 		}
 	}
 	logger.Debugf("consume loop end.")
+}
+
+func (p *Proxy) TokenHandler(handler TokenHandlerFunc) {
+	p.tokenHandler = handler
 }
