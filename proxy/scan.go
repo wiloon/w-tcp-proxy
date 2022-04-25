@@ -265,6 +265,21 @@ func (s *Scanner) Split(split SplitFunc) {
 }
 
 func (s *Scanner) appendBuf(data []byte) {
+	// logger.Debugf("append data to buf, start: %d, end: %d, buf len: %d, cap: %d, data len: %d", s.start, s.end, len(s.buf), cap(s.buf), len(data))
+	if len(data) > cap(s.buf)-s.end {
+		newSize := len(data) * 2
+		if newSize == 0 {
+			newSize = startBufSize
+		}
+		if newSize > s.maxTokenSize {
+			newSize = s.maxTokenSize
+		}
+		newBuf := make([]byte, newSize)
+		copy(newBuf, s.buf[s.start:s.end])
+		s.buf = newBuf
+		s.end -= s.start
+		s.start = 0
+	}
 	copy(s.buf[s.end:cap(s.buf)], data)
 	s.end += len(data)
 }
