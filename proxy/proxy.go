@@ -12,65 +12,181 @@ import (
 type TokenHandlerFunc func(token []byte)
 
 type Proxy struct {
-	ListenPort     string
-	BackendAddress string
-	Epoll          *utils.Epoll
-	Connections    *sync.Map
-	split          SplitFunc
-	tokenHandler   TokenHandlerFunc
+	ListenPort            string
+	BackendMain           string
+	BackendReplicator     string
+	BackendReplicatorMode string
+	Epoll                 *utils.Epoll
+	Connections           *sync.Map
+	split                 SplitFunc
+	tokenHandler          TokenHandlerFunc
 }
 
-type proxyConn struct {
-	InboundFd       int
-	InboundConn     net.Conn
-	InboundScanner  *Scanner
-	OutboundFd      int
-	OutboundConn    net.Conn
-	OutboundScanner *Scanner
+type proxyConnection struct {
+	Fd      int
+	Conn    net.Conn
+	Scanner *Scanner
+	Mode    string
 }
 
-func (pc *proxyConn) GetTargetConn(fd int) net.Conn {
-	if fd == pc.InboundFd {
-		return pc.OutboundConn
-	} else if fd == pc.OutboundFd {
+const proxyModeCopy = "copy"
+const proxyModeForward = "forward"
+
+func (c proxyConnection) isForwardMode() bool {
+	if c.Mode == proxyModeForward {
+		return true
+	}
+	return false
+}
+
+func (c proxyConnection) isCopyMode() bool {
+	if c.Mode == proxyModeCopy {
+		return true
+	}
+	return false
+}
+
+func NewProxyConn(fd int, conn net.Conn, split SplitFunc, mode string) proxyConnection {
+	pc := proxyConnection{
+		Fd:      fd,
+		Conn:    conn,
+		Scanner: NewScanner(make([]byte, 4096)),
+		Mode:    mode,
+	}
+	pc.Scanner.Split(split)
+	return pc
+}
+
+type proxyGroup struct {
+	InboundConn           proxyConnection
+	BackendMainConn       proxyConnection
+	BackendReplicatorConn proxyConnection
+}
+
+func (pc *proxyGroup) Close() {
+	err := pc.InboundConn.Conn.Close()
+	if err != nil {
+		logger.Errorf("failed to close conn: %v", pc.InboundConn.Conn.RemoteAddr().String())
+	}
+	err = pc.BackendMainConn.Conn.Close()
+	if err != nil {
+		logger.Errorf("failed to close conn: %v", pc.BackendMainConn.Conn.RemoteAddr().String())
+	}
+	err = pc.BackendReplicatorConn.Conn.Close()
+	if err != nil {
+		logger.Errorf("failed to close conn: %v", pc.BackendReplicatorConn.Conn.RemoteAddr().String())
+	}
+}
+
+func (pc *proxyGroup) appendBuf(fd int, data []byte) {
+	if fd == pc.InboundConn.Fd {
+		pc.InboundConn.Scanner.appendBuf(data)
+	} else if fd == pc.BackendMainConn.Fd {
+		pc.BackendMainConn.Scanner.appendBuf(data)
+	} else {
+		if pc.BackendReplicatorConn.isForwardMode() {
+			pc.BackendReplicatorConn.Scanner.appendBuf(data)
+		}
+	}
+}
+
+func (pc *proxyGroup) isCopyMode(fd int) bool {
+	if pc.BackendReplicatorConn.isCopyMode() {
+		return true
+	}
+	return false
+}
+
+func (pc *proxyGroup) send(fd int, data []byte) {
+	conn := pc.GetConnFd(fd)
+	// scan
+	for conn.Scanner.Scan() {
+		bytes := conn.Scanner.Bytes()
+		if len(bytes) == 0 {
+			break
+		}
+		if pc.isInboundConn(fd) {
+			if pc.isForwardMode(fd) {
+				pc.BackendReplicatorConn.Conn.Write(bytes)
+			} else if pc.isCopyMode(fd) {
+				mn, err := pc.BackendMainConn.Conn.Write(bytes)
+				if err != nil {
+					logger.Errorf("failed to write err: %v", err)
+					return
+				}
+				logger.Debugf("write to conn: %s, bytes: %d", pc.BackendMainConn.Conn.RemoteAddr().String(), mn)
+				rn, err := pc.BackendReplicatorConn.Conn.Write(bytes)
+				if err != nil {
+					logger.Errorf("failed to write err: %v", err)
+					return
+				}
+				logger.Debugf("write to conn: %s, bytes: %d", pc.BackendReplicatorConn.Conn.RemoteAddr().String(), rn)
+			}
+		} else if pc.isBackendMain(fd) {
+			conn := pc.InboundConn.Conn
+			mn, err := conn.Write(bytes)
+			if err != nil {
+				logger.Errorf("failed to write err: %v", err)
+				return
+			}
+			logger.Debugf("write to conn: %s, bytes: %d", conn.RemoteAddr().String(), mn)
+		} else if pc.isReplicator(fd) {
+			if pc.isForwardMode(fd) {
+				pc.BackendReplicatorConn.Conn.Write(bytes)
+			} else if pc.isCopyMode(fd) {
+				mn, err := pc.BackendMainConn.Conn.Write(bytes)
+				if err != nil {
+					logger.Errorf("failed to write err: %v", err)
+					return
+				}
+				logger.Debugf("write to conn: %s, bytes: %d", pc.BackendMainConn.Conn.RemoteAddr().String(), mn)
+				rn, err := pc.BackendReplicatorConn.Conn.Write(bytes)
+				if err != nil {
+					logger.Errorf("failed to write err: %v", err)
+					return
+				}
+				logger.Debugf("write to conn: %s, bytes: %d", pc.BackendReplicatorConn.Conn.RemoteAddr().String(), rn)
+			}
+		}
+	}
+}
+
+func (pc *proxyGroup) GetConnFd(fd int) proxyConnection {
+	if fd == pc.InboundConn.Fd {
 		return pc.InboundConn
-	}
-	return nil
-}
-
-func (pc *proxyConn) Close() {
-	err := pc.InboundConn.Close()
-	if err != nil {
-		logger.Errorf("failed to close conn: %v", pc.InboundConn.RemoteAddr().String())
-	}
-	err = pc.OutboundConn.Close()
-	if err != nil {
-		logger.Errorf("failed to close conn: %v", pc.InboundConn.RemoteAddr().String())
-	}
-}
-
-func (pc *proxyConn) appendBuf(fd int, data []byte) {
-	if fd == pc.InboundFd {
-		pc.InboundScanner.appendBuf(data)
+	} else if fd == pc.BackendMainConn.Fd {
+		return pc.BackendMainConn
 	} else {
-		pc.OutboundScanner.appendBuf(data)
+		return pc.BackendReplicatorConn
 	}
 }
 
-func (pc *proxyConn) Scan(fd int) bool {
-	if fd == pc.InboundFd {
-		return pc.InboundScanner.Scan()
-	} else {
-		return pc.OutboundScanner.Scan()
+func (pc *proxyGroup) isForwardMode(fd int) bool {
+	if fd == pc.BackendReplicatorConn.Fd && pc.BackendReplicatorConn.isForwardMode() {
+		return true
 	}
+	return false
 }
 
-func (pc *proxyConn) Bytes(fd int) []byte {
-	if fd == pc.InboundFd {
-		return pc.InboundScanner.Bytes()
-	} else {
-		return pc.OutboundScanner.Bytes()
+func (pc *proxyGroup) isReplicator(fd int) bool {
+	if fd == pc.BackendReplicatorConn.Fd {
+		return true
 	}
+	return false
+}
+
+func (pc *proxyGroup) isInboundConn(fd int) bool {
+	if fd == pc.InboundConn.Fd {
+		return true
+	}
+	return false
+}
+
+func (pc *proxyGroup) isBackendMain(fd int) bool {
+	if fd == pc.BackendMainConn.Fd {
+		return true
+	}
+	return false
 }
 
 type connData struct {
@@ -106,36 +222,46 @@ func (p *Proxy) Start() {
 				return
 			}
 			sourceConnFd := utils.SocketFD(sourceConn)
-			logger.Infof("inbound conn: %s, fd: %d", sourceConn.RemoteAddr().String(), sourceConnFd)
+			logger.Infof("inbound conn: fd: %d, %s<>%s", sourceConnFd, sourceConn.LocalAddr().String(), sourceConn.RemoteAddr().String())
 
 			// dial target
-			targetConn, err := net.Dial("tcp4", p.BackendAddress)
+			backendMainConn, err := net.Dial("tcp4", p.BackendMain)
 			if err != nil {
 				logger.Errorf("failed to dial backend server %v", err)
 				return
 			}
-			targetConnFd := utils.SocketFD(targetConn)
-			logger.Infof("proxy, inbound: %s>%s, fd: %d, outbound: %s>%s, fd: %d",
-				sourceConn.RemoteAddr().String(), sourceConn.LocalAddr().String(), sourceConnFd, targetConn.LocalAddr().String(), targetConn.RemoteAddr().String(), targetConnFd)
+			backendMainFd := utils.SocketFD(backendMainConn)
+			logger.Infof("backend conn main, fd: %d, %s<>%s",
+				backendMainFd, backendMainConn.LocalAddr().String(), backendMainConn.RemoteAddr().String())
 
-			pc := &proxyConn{
-				InboundFd:       sourceConnFd,
-				InboundConn:     sourceConn,
-				InboundScanner:  NewScanner(make([]byte, 4096)),
-				OutboundFd:      targetConnFd,
-				OutboundConn:    targetConn,
-				OutboundScanner: NewScanner(make([]byte, 4096)),
+			backendReplicatorConn, err := net.Dial("tcp4", p.BackendReplicator)
+			if err != nil {
+				logger.Errorf("failed to dial backend server %v", err)
+				return
 			}
-			pc.InboundScanner.split = p.split
-			pc.OutboundScanner.split = p.split
+			backendReplicatorFd := utils.SocketFD(backendReplicatorConn)
+			logger.Infof("backend conn replicator, fd: %d, %s<>%s",
+				backendReplicatorFd, backendReplicatorConn.LocalAddr().String(), backendReplicatorConn.RemoteAddr().String())
+
+			pc := &proxyGroup{
+				InboundConn:           NewProxyConn(sourceConnFd, sourceConn, p.split, ""), // todo, inbound conn no mode
+				BackendMainConn:       NewProxyConn(backendMainFd, backendMainConn, p.split, ""),
+				BackendReplicatorConn: NewProxyConn(backendReplicatorFd, backendReplicatorConn, p.split, p.BackendReplicatorMode),
+			}
+
 			p.Connections.Store(sourceConnFd, pc)
-			p.Connections.Store(targetConnFd, pc)
+			p.Connections.Store(backendMainFd, pc)
+			p.Connections.Store(backendReplicatorFd, pc)
 
 			if err := p.Epoll.Add(sourceConn); err != nil {
 				logger.Errorf("failed to add connection %v", err)
 				pc.Close()
 			}
-			if err := p.Epoll.Add(targetConn); err != nil {
+			if err := p.Epoll.Add(backendMainConn); err != nil {
+				logger.Errorf("failed to add connection %v", err)
+				pc.Close()
+			}
+			if err := p.Epoll.Add(backendReplicatorConn); err != nil {
 				logger.Errorf("failed to add connection %v", err)
 				pc.Close()
 			}
@@ -168,24 +294,34 @@ func (p *Proxy) proxy(ep *utils.Epoll, ch chan *connData) {
 				logger.Infof("remove conn from epoll: %s<>%s", conn.LocalAddr().String(), conn.RemoteAddr().String())
 
 				if tmp, ok := p.Connections.Load(connFd); ok {
-					pc := tmp.(*proxyConn)
-					if connFd == pc.InboundFd {
-						if err := ep.Remove(pc.OutboundConn); err != nil {
-							logger.Errorf("failed to remove %v", err)
+					pc := tmp.(*proxyGroup)
+					if connFd == pc.InboundConn.Fd {
+						// close all
+						removeConnFromEp(ep, pc.BackendMainConn.Conn)
+						pc.BackendMainConn.Conn.Close()
+						logger.Infof("close conn: %s<>%s", pc.BackendMainConn.Conn.LocalAddr().String(), pc.BackendMainConn.Conn.RemoteAddr().String())
+						removeConnFromEp(ep, pc.BackendReplicatorConn.Conn)
+						pc.BackendReplicatorConn.Conn.Close()
+						logger.Infof("close conn: %s<>%s", pc.BackendReplicatorConn.Conn.LocalAddr().String(), pc.BackendReplicatorConn.Conn.RemoteAddr().String())
+					} else if connFd == pc.BackendMainConn.Fd { // todo , one backend close, check mode, and active conn
+						if pc.isCopyMode(connFd) {
+							// close all
+							removeConnFromEp(ep, pc.InboundConn.Conn)
+							pc.InboundConn.Conn.Close()
+							logger.Infof("close conn: %s<>%s", pc.InboundConn.Conn.LocalAddr().String(), pc.InboundConn.Conn.RemoteAddr().String())
+							removeConnFromEp(ep, pc.BackendMainConn.Conn)
+							pc.BackendMainConn.Conn.Close()
+							logger.Infof("close conn: %s<>%s", pc.BackendMainConn.Conn.LocalAddr().String(), pc.BackendMainConn.Conn.RemoteAddr().String())
+							removeConnFromEp(ep, pc.BackendReplicatorConn.Conn)
+							pc.BackendReplicatorConn.Conn.Close()
+							logger.Infof("close conn: %s<>%s", pc.BackendReplicatorConn.Conn.LocalAddr().String(), pc.BackendReplicatorConn.Conn.RemoteAddr().String())
+						} else {
+							//todo
 						}
-						logger.Infof("remove conn from epoll: %s<>%s", pc.OutboundConn.LocalAddr().String(), pc.OutboundConn.RemoteAddr().String())
-						pc.OutboundConn.Close()
-						logger.Infof("close conn: %s<>%s", pc.OutboundConn.LocalAddr().String(), pc.OutboundConn.RemoteAddr().String())
-					} else {
-						if err := ep.Remove(pc.InboundConn); err != nil {
-							logger.Errorf("failed to remove %v", err)
-						}
-						logger.Infof("remove conn from epoll: %s<>%s", pc.InboundConn.LocalAddr().String(), pc.InboundConn.RemoteAddr().String())
-						pc.InboundConn.Close()
-						logger.Infof("close conn: %s<>%s", pc.InboundConn.LocalAddr().String(), pc.InboundConn.RemoteAddr().String())
+					} else if connFd == pc.BackendReplicatorConn.Fd {
+						// do nothing
 					}
 				}
-				conn.Close()
 				continue
 			}
 
@@ -201,52 +337,52 @@ func (p *Proxy) Split(split SplitFunc) {
 	p.split = split
 }
 
-func NewProxy(listenPort, backendAddress string) *Proxy {
+func NewProxy(listenPort, backendMain, backendReplicator, backendReplicatorMode string) *Proxy {
 	ep, err := utils.MkEpoll()
 	if err != nil {
 		logger.Errorf("failed to create epoll, err: %v", err)
 		return nil
 	}
-	return &Proxy{ListenPort: listenPort, BackendAddress: backendAddress, Epoll: ep, Connections: &sync.Map{}}
+	return &Proxy{
+		ListenPort:            listenPort,
+		BackendMain:           backendMain,
+		BackendReplicator:     backendReplicator,
+		BackendReplicatorMode: backendReplicatorMode,
+		Epoll:                 ep,
+		Connections:           &sync.Map{},
+	}
 }
 
 func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 	for {
 		cd := <-ch
+		fd := cd.Fd
+		logger.Debugf("consume fd: %d", fd)
 		// find conn
-		conn, ok := connMap.Load(cd.Fd)
+		conn, ok := connMap.Load(fd)
 		if !ok {
 			continue
 		}
-		pConn := conn.(*proxyConn)
-
-		// append data to buffer
-		pConn.appendBuf(cd.Fd, cd.Data)
-		targetConn := pConn.GetTargetConn(cd.Fd)
-		if targetConn == nil {
-			logger.Warnf("target conn not found")
+		pConn := conn.(*proxyGroup)
+		if pConn.isCopyMode(fd) && pConn.isReplicator(fd) {
 			continue
 		}
 
-		// scan
-		for pConn.Scan(cd.Fd) {
-			bytes := pConn.Bytes(cd.Fd)
-			if len(bytes) == 0 {
-				break
-			}
-			p.tokenHandler(bytes)
-			// send token
-			write, err := targetConn.Write(bytes)
-			if err != nil {
-				logger.Errorf("failed to write err: %v", err)
-				return
-			}
-			logger.Debugf("write to conn: %s, bytes: %d", targetConn.RemoteAddr().String(), write)
-		}
+		// append data to buffer
+		pConn.appendBuf(cd.Fd, cd.Data)
+		pConn.send(cd.Fd, cd.Data)
+
 	}
 	logger.Debugf("consume loop end.")
 }
 
 func (p *Proxy) TokenHandler(handler TokenHandlerFunc) {
 	p.tokenHandler = handler
+}
+
+func removeConnFromEp(ep *utils.Epoll, conn net.Conn) {
+	if err := ep.Remove(conn); err != nil {
+		logger.Errorf("failed to remove %v", err)
+	}
+	logger.Infof("remove conn from epoll: %s<>%s", conn.LocalAddr().String(), conn.RemoteAddr().String())
 }
