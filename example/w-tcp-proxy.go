@@ -4,6 +4,7 @@ import (
 	"flag"
 	"github.com/wiloon/w-tcp-proxy/proxy"
 	"github.com/wiloon/w-tcp-proxy/utils"
+	"github.com/wiloon/w-tcp-proxy/utils/config"
 	"github.com/wiloon/w-tcp-proxy/utils/logger"
 )
 
@@ -20,6 +21,7 @@ var (
 
 func main() {
 	flag.Parse()
+	config.Init()
 	p := proxy.NewProxy(*listenPort, *backendMain, *backendReplicator, *backendReplicatorMode)
 	p.Split(split0)
 	p.TokenHandler(tkHandler)

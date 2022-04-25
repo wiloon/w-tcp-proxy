@@ -8,18 +8,18 @@ level="debug"
 [metric]
 
 [[backend]]
-address="10.71.20.181"
-label=0
+address="10.71.20.181:6100"
+id=0
 default=true
 
 [[backend]]
-address="10.71.20.6"
-label=1
+address="10.71.20.6:4100"
+id=1
 
 [[rule]]
-code="code0"
+key="code0"
 backend=[0,1]
 
 [[rule]]
-code="code1"
+key="code1"
 backend=[0]
