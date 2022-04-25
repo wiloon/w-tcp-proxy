@@ -165,6 +165,7 @@ func (p *Proxy) proxy(ep *utils.Epoll, ch chan *connData) {
 				if err := ep.Remove(conn); err != nil {
 					logger.Errorf("failed to remove %v", err)
 				}
+				logger.Infof("remove conn from epoll: %s<>%s", conn.LocalAddr().String(), conn.RemoteAddr().String())
 
 				if tmp, ok := p.Connections.Load(connFd); ok {
 					pc := tmp.(*proxyConn)
@@ -172,7 +173,16 @@ func (p *Proxy) proxy(ep *utils.Epoll, ch chan *connData) {
 						if err := ep.Remove(pc.OutboundConn); err != nil {
 							logger.Errorf("failed to remove %v", err)
 						}
+						logger.Infof("remove conn from epoll: %s<>%s", pc.OutboundConn.LocalAddr().String(), pc.OutboundConn.RemoteAddr().String())
 						pc.OutboundConn.Close()
+						logger.Infof("close conn: %s<>%s", pc.OutboundConn.LocalAddr().String(), pc.OutboundConn.RemoteAddr().String())
+					} else {
+						if err := ep.Remove(pc.InboundConn); err != nil {
+							logger.Errorf("failed to remove %v", err)
+						}
+						logger.Infof("remove conn from epoll: %s<>%s", pc.InboundConn.LocalAddr().String(), pc.InboundConn.RemoteAddr().String())
+						pc.InboundConn.Close()
+						logger.Infof("close conn: %s<>%s", pc.InboundConn.LocalAddr().String(), pc.InboundConn.RemoteAddr().String())
 					}
 				}
 				conn.Close()
