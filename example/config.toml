@@ -1,25 +1,24 @@
-[project]
-name="w-tcp-proxy"
+[Project]
+Name = 'w-tcp-proxy'
 
-[log]
-to="file"
-level="debug"
+[Log]
+Console = true
+ConsoleLevel = 'debug'
+File = true
+FileLevel = 'debug'
 
-[metric]
+[[Backends]]
+Id = '0'
+Address = '192.168.0.1'
+Default = true
+[[Backends]]
+Id = '1'
+Address = '192.168.0.2'
+Default = false
 
-[[backend]]
-address="10.71.20.181:6100"
-id=0
-default=true
-
-[[backend]]
-address="10.71.20.6:4100"
-id=1
-
-[[rule]]
-key="code0"
-backend=[0,1]
-
-[[rule]]
-key="code1"
-backend=[0]
+[[Route]]
+Key = 'key0'
+BackendId = ['0', '1']
+[[Route]]
+Key = 'key1'
+BackendId = ['0']

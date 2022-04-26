@@ -22,6 +22,14 @@ var (
 func main() {
 	flag.Parse()
 	config.Init()
+	cfg := config.Instance
+	logger.InitTo(
+		cfg.Log.Console,
+		cfg.Log.File,
+		cfg.Log.FileLevel,
+		cfg.Project.Name,
+	)
+
 	p := proxy.NewProxy(*listenPort, *backendMain, *backendReplicator, *backendReplicatorMode)
 	p.Split(split0)
 	p.TokenHandler(tkHandler)
