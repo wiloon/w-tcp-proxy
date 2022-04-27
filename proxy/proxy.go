@@ -199,8 +199,6 @@ func (c *connData) String() string {
 }
 
 func (p *Proxy) Start() {
-	logger.InitTo(true, true, "debug", "w-tcp-proxy")
-
 	utils.SetNoFileLimit(10000, 20000)
 	inboundListener, err := net.Listen("tcp", ":"+p.ListenPort)
 	if err != nil {
