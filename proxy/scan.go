@@ -5,7 +5,6 @@
 package proxy
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"unicode/utf8"
@@ -34,14 +33,15 @@ type Scanner struct {
 	r            io.Reader // The reader provided by the client.
 	split        SplitFunc // The function to split the tokens.
 	maxTokenSize int       // Maximum size of a token; modified by tests.
-	token        []byte    // Last token returned by split.
-	buf          []byte    // Buffer used as argument to split.
-	start        int       // First non-processed byte in buf.
-	end          int       // End of data in buf.
-	err          error     // Sticky error.
-	empties      int       // Count of successive empty tokens.
-	scanCalled   bool      // Scan has been called; buffer is in use.
-	done         bool      // Scan has finished.
+	key          []byte
+	token        []byte // Last token returned by split.
+	buf          []byte // Buffer used as argument to split.
+	start        int    // First non-processed byte in buf.
+	end          int    // End of data in buf.
+	err          error  // Sticky error.
+	empties      int    // Count of successive empty tokens.
+	scanCalled   bool   // Scan has been called; buffer is in use.
+	done         bool   // Scan has finished.
 }
 
 // SplitFunc is the signature of the split function used to tokenize the
@@ -66,7 +66,7 @@ type Scanner struct {
 // The function is never called with an empty data slice unless atEOF
 // is true. If atEOF is true, however, data may be non-empty and,
 // as always, holds unprocessed text.
-type SplitFunc func(data []byte, atEOF bool) (advance int, token []byte, err error)
+type SplitFunc func(data []byte, atEOF bool) (advance int, key, token []byte, err error)
 
 // Errors returned by Scanner.
 var (
@@ -91,7 +91,6 @@ const (
 func NewScanner(buf []byte) *Scanner {
 	return &Scanner{
 		buf:          buf,
-		split:        ScanLines,
 		maxTokenSize: MaxScanTokenSize,
 	}
 }
@@ -147,10 +146,11 @@ func (s *Scanner) Scan() bool {
 		// If we've run out of data but have an error, give the split function
 		// a chance to recover any remaining, possibly empty token.
 		if s.end > s.start || s.err != nil {
-			advance, token, err := s.split(s.buf[s.start:s.end], s.err != nil)
+			advance, key, token, err := s.split(s.buf[s.start:s.end], s.err != nil)
 			if err != nil {
 				if err == ErrFinalToken {
 					s.token = token
+					s.key = key
 					s.done = true
 					return true
 				}
@@ -340,28 +340,6 @@ func dropCR(data []byte) []byte {
 		return data[0 : len(data)-1]
 	}
 	return data
-}
-
-// ScanLines is a split function for a Scanner that returns each line of
-// text, stripped of any trailing end-of-line marker. The returned line may
-// be empty. The end-of-line marker is one optional carriage return followed
-// by one mandatory newline. In regular expression notation, it is `\r?\n`.
-// The last non-empty line of input will be returned even if it has no
-// newline.
-func ScanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if atEOF && len(data) == 0 {
-		return 0, nil, nil
-	}
-	if i := bytes.IndexByte(data, '\n'); i >= 0 {
-		// We have a full newline-terminated line.
-		return i + 1, dropCR(data[0:i]), nil
-	}
-	// If we're at EOF, we have a final, non-terminated line. Return it.
-	if atEOF {
-		return len(data), dropCR(data), nil
-	}
-	// Request more data.
-	return 0, nil, nil
 }
 
 // isSpace reports whether the character is a Unicode white space character.

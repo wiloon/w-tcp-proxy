@@ -1,5 +1,6 @@
 [Project]
 Name = 'w-tcp-proxy'
+Port = 2000
 
 [Log]
 Console = true

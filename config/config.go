@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/pelletier/go-toml/v2"
+	"github.com/wiloon/w-tcp-proxy/utils"
 	"log"
 )
 
@@ -9,6 +10,7 @@ var Instance WTcpProxyConfig
 
 type Project struct {
 	Name string
+	Port int
 }
 
 //goland:noinspection GoUnusedConst
@@ -40,10 +42,8 @@ type WTcpProxyConfig struct {
 	Route    []Route
 }
 
-var configFilePath string
-
 func Init() {
-	b, err := LoadDefaultConfigFile()
+	b, err := utils.LoadDefaultConfigFile()
 	if err != nil {
 		log.Printf("failed to load config: %v", err)
 	}

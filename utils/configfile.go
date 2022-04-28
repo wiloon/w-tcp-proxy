@@ -1,4 +1,4 @@
-package config
+package utils
 
 import (
 	"errors"
@@ -12,6 +12,7 @@ import (
 
 const sysEnvKeyAppConfig = "app_config"
 
+var configFilePath string
 var defaultFileName = "config.toml"
 
 func LoadDefaultConfigFile() ([]byte, error) {

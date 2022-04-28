@@ -2,9 +2,9 @@ package main
 
 import (
 	"flag"
+	"github.com/wiloon/w-tcp-proxy/config"
 	"github.com/wiloon/w-tcp-proxy/proxy"
 	"github.com/wiloon/w-tcp-proxy/utils"
-	"github.com/wiloon/w-tcp-proxy/utils/config"
 	"github.com/wiloon/w-tcp-proxy/utils/logger"
 )
 
@@ -29,8 +29,9 @@ func main() {
 		cfg.Log.FileLevel,
 		cfg.Project.Name,
 	)
+	logger.Debugf("project name: %s", cfg.Project.Name)
 
-	p := proxy.NewProxy(*listenPort, *backendMain, *backendReplicator, *backendReplicatorMode)
+	p := proxy.NewProxy(cfg.Project.Port, *backendMain, *backendReplicator, *backendReplicatorMode)
 	p.Split(split0)
 	p.TokenHandler(tkHandler)
 	p.Start()
@@ -40,9 +41,10 @@ func main() {
 	})
 }
 
-func split0(data []byte, eof bool) (advance int, token []byte, err error) {
+func split0(data []byte, eof bool) (advance int, key, token []byte, err error) {
 	token = data
-	return len(data), token, err
+	key = []byte("key0")
+	return len(data), key, token, err
 }
 
 func tkHandler(token []byte) {

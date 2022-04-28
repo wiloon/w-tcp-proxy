@@ -12,7 +12,7 @@ import (
 type TokenHandlerFunc func(token []byte)
 
 type Proxy struct {
-	ListenPort            string
+	ListenPort            int
 	BackendMain           string
 	BackendReplicator     string
 	BackendReplicatorMode string
@@ -27,6 +27,11 @@ type proxyConnection struct {
 	Conn    net.Conn
 	Scanner *Scanner
 	Mode    string
+}
+
+type BackendServer struct {
+	Address string
+	Default bool
 }
 
 const proxyModeCopy = "copy"
@@ -46,7 +51,7 @@ func (c proxyConnection) isCopyMode() bool {
 	return false
 }
 
-func NewProxyConn(fd int, conn net.Conn, split SplitFunc, mode string) proxyConnection {
+func NewProxyConn(fd int, conn net.Conn, split SplitFunc, mode string) *proxyConnection {
 	pc := proxyConnection{
 		Fd:      fd,
 		Conn:    conn,
@@ -54,13 +59,13 @@ func NewProxyConn(fd int, conn net.Conn, split SplitFunc, mode string) proxyConn
 		Mode:    mode,
 	}
 	pc.Scanner.Split(split)
-	return pc
+	return &pc
 }
 
 type proxyGroup struct {
-	InboundConn           proxyConnection
-	BackendMainConn       proxyConnection
-	BackendReplicatorConn proxyConnection
+	InboundConn           *proxyConnection
+	BackendMainConn       *proxyConnection
+	BackendReplicatorConn *proxyConnection
 }
 
 func (pc *proxyGroup) Close() {
@@ -151,7 +156,7 @@ func (pc *proxyGroup) send(fd int, data []byte) {
 	}
 }
 
-func (pc *proxyGroup) GetConnFd(fd int) proxyConnection {
+func (pc *proxyGroup) GetConnFd(fd int) *proxyConnection {
 	if fd == pc.InboundConn.Fd {
 		return pc.InboundConn
 	} else if fd == pc.BackendMainConn.Fd {
@@ -198,9 +203,11 @@ func (c *connData) String() string {
 	return fmt.Sprintf("fd: %d, data: %s", c.Fd, hex.EncodeToString(c.Data))
 }
 
+var proxyConnections = make(map[int]*proxyConnection)
+
 func (p *Proxy) Start() {
 	utils.SetNoFileLimit(10000, 20000)
-	inboundListener, err := net.Listen("tcp", ":"+p.ListenPort)
+	inboundListener, err := net.Listen("tcp", fmt.Sprintf(":%d", p.ListenPort))
 	if err != nil {
 		logger.Errorf("failed to listen: %s, err: %v", p.ListenPort, err)
 		return
@@ -221,6 +228,8 @@ func (p *Proxy) Start() {
 			}
 			sourceConnFd := utils.SocketFD(sourceConn)
 			logger.Infof("inbound conn: fd: %d, %s<>%s", sourceConnFd, sourceConn.LocalAddr().String(), sourceConn.RemoteAddr().String())
+
+			proxyConnections[sourceConnFd] = NewProxyConn(sourceConnFd, sourceConn, p.split, "")
 
 			// dial target
 			backendMainConn, err := net.Dial("tcp4", p.BackendMain)
@@ -335,7 +344,7 @@ func (p *Proxy) Split(split SplitFunc) {
 	p.split = split
 }
 
-func NewProxy(listenPort, backendMain, backendReplicator, backendReplicatorMode string) *Proxy {
+func NewProxy(listenPort int, backendMain, backendReplicator, backendReplicatorMode string) *Proxy {
 	ep, err := utils.MkEpoll()
 	if err != nil {
 		logger.Errorf("failed to create epoll, err: %v", err)
@@ -367,7 +376,15 @@ func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 		}
 
 		// append data to buffer
-		pConn.appendBuf(cd.Fd, cd.Data)
+		proxyConnections[cd.Fd].Scanner.appendBuf(cd.Data)
+		//pConn.appendBuf(cd.Fd, cd.Data)
+
+		for proxyConnections[cd.Fd].Scanner.Scan() {
+			bytes := proxyConnections[cd.Fd].Scanner.Bytes()
+			if len(bytes) == 0 {
+				break
+			}
+		}
 		pConn.send(cd.Fd, cd.Data)
 
 	}

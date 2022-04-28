@@ -8,7 +8,7 @@ import (
 
 func Test0(t *testing.T) {
 	cfg := WTcpProxyConfig{
-		Project: Project{Name: "w-tcp-proxy"},
+		Project: Project{Name: "w-tcp-proxy", Port: 2000},
 		Log:     Log{Console: true, ConsoleLevel: LogLevelDebug, File: true, FileLevel: LogLevelDebug},
 		Backends: []Backend{
 			{Id: "0", Address: "192.168.0.1", Default: true},
