@@ -3,6 +3,8 @@ package proxy
 import (
 	"encoding/hex"
 	"fmt"
+	"github.com/wiloon/w-tcp-proxy/config"
+	"github.com/wiloon/w-tcp-proxy/route"
 	"github.com/wiloon/w-tcp-proxy/utils"
 	"github.com/wiloon/w-tcp-proxy/utils/logger"
 	"net"
@@ -203,7 +205,15 @@ func (c *connData) String() string {
 	return fmt.Sprintf("fd: %d, data: %s", c.Fd, hex.EncodeToString(c.Data))
 }
 
+type Route struct {
+	source int
+	target []int
+}
+
+// key: fd, value: proxyConnection
 var proxyConnections = make(map[int]*proxyConnection)
+var connMap map[int]Route
+var addressFd = make(map[string]int)
 
 func (p *Proxy) Start() {
 	utils.SetNoFileLimit(10000, 20000)
@@ -230,48 +240,33 @@ func (p *Proxy) Start() {
 			logger.Infof("inbound conn: fd: %d, %s<>%s", sourceConnFd, sourceConn.LocalAddr().String(), sourceConn.RemoteAddr().String())
 
 			proxyConnections[sourceConnFd] = NewProxyConn(sourceConnFd, sourceConn, p.split, "")
-
-			// dial target
-			backendMainConn, err := net.Dial("tcp4", p.BackendMain)
-			if err != nil {
-				logger.Errorf("failed to dial backend server %v", err)
-				return
-			}
-			backendMainFd := utils.SocketFD(backendMainConn)
-			logger.Infof("backend conn main, fd: %d, %s<>%s",
-				backendMainFd, backendMainConn.LocalAddr().String(), backendMainConn.RemoteAddr().String())
-
-			backendReplicatorConn, err := net.Dial("tcp4", p.BackendReplicator)
-			if err != nil {
-				logger.Errorf("failed to dial backend server %v", err)
-				return
-			}
-			backendReplicatorFd := utils.SocketFD(backendReplicatorConn)
-			logger.Infof("backend conn replicator, fd: %d, %s<>%s",
-				backendReplicatorFd, backendReplicatorConn.LocalAddr().String(), backendReplicatorConn.RemoteAddr().String())
-
-			pc := &proxyGroup{
-				InboundConn:           NewProxyConn(sourceConnFd, sourceConn, p.split, ""), // todo, inbound conn no mode
-				BackendMainConn:       NewProxyConn(backendMainFd, backendMainConn, p.split, ""),
-				BackendReplicatorConn: NewProxyConn(backendReplicatorFd, backendReplicatorConn, p.split, p.BackendReplicatorMode),
-			}
-
-			p.Connections.Store(sourceConnFd, pc)
-			p.Connections.Store(backendMainFd, pc)
-			p.Connections.Store(backendReplicatorFd, pc)
-
 			if err := p.Epoll.Add(sourceConn); err != nil {
 				logger.Errorf("failed to add connection %v", err)
-				pc.Close()
+				// todo close conn peer
 			}
-			if err := p.Epoll.Add(backendMainConn); err != nil {
-				logger.Errorf("failed to add connection %v", err)
-				pc.Close()
+
+			var targets []int
+			for _, v := range config.Instance.Backends {
+				// create conn to all backend
+				conn, err := net.Dial("tcp4", v.Address)
+				if err != nil {
+					logger.Errorf("failed to dial backend server %v", err)
+					return
+				}
+				fd := utils.SocketFD(conn)
+				proxyConnections[fd] = NewProxyConn(fd, conn, p.split, "")
+				targets = append(targets, fd)
+				connMap[fd] = Route{source: fd, target: []int{sourceConnFd}}
+
+				if err := p.Epoll.Add(conn); err != nil {
+					logger.Errorf("failed to add connection %v", err)
+					// todo close conn peer
+				}
+				addressFd[v.Address] = fd
+				logger.Infof("backend conn, fd: %d, %s<>%s",
+					fd, conn.LocalAddr().String(), conn.RemoteAddr().String())
 			}
-			if err := p.Epoll.Add(backendReplicatorConn); err != nil {
-				logger.Errorf("failed to add connection %v", err)
-				pc.Close()
-			}
+			connMap[sourceConnFd] = Route{source: sourceConnFd, target: targets}
 		}
 	}()
 }
@@ -365,30 +360,30 @@ func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 		cd := <-ch
 		fd := cd.Fd
 		logger.Debugf("consume fd: %d", fd)
-		// find conn
-		conn, ok := connMap.Load(fd)
-		if !ok {
-			continue
-		}
-		pConn := conn.(*proxyGroup)
-		if pConn.isCopyMode(fd) && pConn.isReplicator(fd) {
-			continue
-		}
 
 		// append data to buffer
-		proxyConnections[cd.Fd].Scanner.appendBuf(cd.Data)
+		pConn := proxyConnections[cd.Fd]
+		pConn.Scanner.appendBuf(cd.Data)
 		//pConn.appendBuf(cd.Fd, cd.Data)
 
-		for proxyConnections[cd.Fd].Scanner.Scan() {
-			bytes := proxyConnections[cd.Fd].Scanner.Bytes()
-			if len(bytes) == 0 {
+		for pConn.Scanner.Scan() {
+			key := pConn.Scanner.Key()
+			data := pConn.Scanner.Bytes()
+			if len(data) == 0 {
 				break
 			}
+			// get backend by key
+			if r, ok := route.RuleMap.Load(string(key)); ok {
+				rule := r.(route.Rule)
+				for _, address := range rule.Backends {
+					connFd := addressFd[address]
+					bConn := proxyConnections[connFd]
+					bConn.Conn.Write(data)
+				}
+			}
 		}
-		pConn.send(cd.Fd, cd.Data)
-
 	}
-	logger.Debugf("consume loop end.")
+	// logger.Debug("consume loop end.")
 }
 
 func (p *Proxy) TokenHandler(handler TokenHandlerFunc) {

@@ -4,6 +4,7 @@ import (
 	"flag"
 	"github.com/wiloon/w-tcp-proxy/config"
 	"github.com/wiloon/w-tcp-proxy/proxy"
+	"github.com/wiloon/w-tcp-proxy/route"
 	"github.com/wiloon/w-tcp-proxy/utils"
 	"github.com/wiloon/w-tcp-proxy/utils/logger"
 )
@@ -29,8 +30,9 @@ func main() {
 		cfg.Log.FileLevel,
 		cfg.Project.Name,
 	)
-	logger.Debugf("project name: %s", cfg.Project.Name)
 
+	logger.Debugf("project name: %s", cfg.Project.Name)
+	route.Init()
 	p := proxy.NewProxy(cfg.Project.Port, *backendMain, *backendReplicator, *backendReplicatorMode)
 	p.Split(split0)
 	p.TokenHandler(tkHandler)
