@@ -163,6 +163,7 @@ func (s *Scanner) Scan() bool {
 			if !s.advance(advance) {
 				return false
 			}
+			s.key = key
 			s.token = token
 			if token != nil {
 				if s.err == nil || advance > 0 {

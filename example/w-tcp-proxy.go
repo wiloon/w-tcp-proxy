@@ -32,8 +32,8 @@ func main() {
 	)
 
 	logger.Debugf("project name: %s", cfg.Project.Name)
-	route.Init()
-	p := proxy.NewProxy(cfg.Project.Port, *backendMain, *backendReplicator, *backendReplicatorMode)
+	r := route.Init()
+	p := proxy.NewProxy(cfg.Project.Port, r)
 	p.Split(split0)
 	p.TokenHandler(tkHandler)
 	p.Start()

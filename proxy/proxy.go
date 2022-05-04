@@ -13,18 +13,19 @@ import (
 
 type TokenHandlerFunc func(token []byte)
 
+var epoll *utils.Epoll
+
 type Proxy struct {
-	ListenPort            int
-	BackendMain           string
-	BackendReplicator     string
-	BackendReplicatorMode string
-	Epoll                 *utils.Epoll
-	Connections           *sync.Map
-	split                 SplitFunc
-	tokenHandler          TokenHandlerFunc
+	ListenPort int
+
+	Connections  *sync.Map
+	split        SplitFunc
+	tokenHandler TokenHandlerFunc
 }
 
+// proxy connection, inbound connection, backend connection
 type proxyConnection struct {
+	Address string
 	Fd      int
 	Conn    net.Conn
 	Scanner *Scanner
@@ -53,15 +54,31 @@ func (c proxyConnection) isCopyMode() bool {
 	return false
 }
 
-func NewProxyConn(fd int, conn net.Conn, split SplitFunc, mode string) *proxyConnection {
+func (c proxyConnection) Dial() {
+	// create conn to all backend
+	conn, err := net.Dial("tcp4", c.Address)
+	if err != nil {
+		logger.Errorf("failed to dial backend server %v", err)
+		return
+	}
+	fd := utils.SocketFD(conn)
+
 	pc := proxyConnection{
 		Fd:      fd,
 		Conn:    conn,
 		Scanner: NewScanner(make([]byte, 4096)),
-		Mode:    mode,
 	}
 	pc.Scanner.Split(split)
-	return &pc
+
+	proxyConnections[fd] = &pc
+
+	if err := epoll.Add(conn); err != nil {
+		logger.Errorf("failed to add connection %v", err)
+		// todo close conn peer
+	}
+	addressFd[c.Address] = fd
+	logger.Infof("backend conn, fd: %d, %s<>%s",
+		fd, conn.LocalAddr().String(), conn.RemoteAddr().String())
 }
 
 type proxyGroup struct {
@@ -210,37 +227,37 @@ type Route struct {
 	target []int
 }
 
-// key: fd, value: proxyConnection
-var proxyConnections = make(map[int]*proxyConnection)
-var connMap map[int]Route
+var connMap = make(map[int]Route)
 var addressFd = make(map[string]int)
 
 func (p *Proxy) Start() {
+	var err error
+	Epoll, err = utils.MkEpoll()
 	utils.SetNoFileLimit(10000, 20000)
 	inboundListener, err := net.Listen("tcp", fmt.Sprintf(":%d", p.ListenPort))
 	if err != nil {
 		logger.Errorf("failed to listen: %s, err: %v", p.ListenPort, err)
 		return
 	}
-	logger.Infof("proxy listening on: %s", p.ListenPort)
+	logger.Infof("proxy listening on: %d", p.ListenPort)
 
 	ch0 := make(chan *connData, 100)
 
-	go p.proxy(p.Epoll, ch0)
+	go p.epWait(p.Epoll, ch0)
 
 	go p.consume(ch0, p.Connections)
 
 	go func() {
 		for {
-			sourceConn, err := inboundListener.Accept()
+			inboundConn, err := inboundListener.Accept()
 			if err != nil {
 				return
 			}
-			sourceConnFd := utils.SocketFD(sourceConn)
-			logger.Infof("inbound conn: fd: %d, %s<>%s", sourceConnFd, sourceConn.LocalAddr().String(), sourceConn.RemoteAddr().String())
+			inboundFd := utils.SocketFD(inboundConn)
+			logger.Infof("inbound conn: fd: %d, %s<>%s", inboundFd, inboundConn.LocalAddr().String(), inboundConn.RemoteAddr().String())
 
-			proxyConnections[sourceConnFd] = NewProxyConn(sourceConnFd, sourceConn, p.split, "")
-			if err := p.Epoll.Add(sourceConn); err != nil {
+			proxyConnections[inboundFd] = NewProxyConn(inboundFd, inboundConn, p.split, "")
+			if err := p.Epoll.Add(inboundConn); err != nil {
 				logger.Errorf("failed to add connection %v", err)
 				// todo close conn peer
 			}
@@ -256,7 +273,7 @@ func (p *Proxy) Start() {
 				fd := utils.SocketFD(conn)
 				proxyConnections[fd] = NewProxyConn(fd, conn, p.split, "")
 				targets = append(targets, fd)
-				connMap[fd] = Route{source: fd, target: []int{sourceConnFd}}
+				connMap[fd] = Route{source: fd, target: []int{inboundFd}}
 
 				if err := p.Epoll.Add(conn); err != nil {
 					logger.Errorf("failed to add connection %v", err)
@@ -266,12 +283,12 @@ func (p *Proxy) Start() {
 				logger.Infof("backend conn, fd: %d, %s<>%s",
 					fd, conn.LocalAddr().String(), conn.RemoteAddr().String())
 			}
-			connMap[sourceConnFd] = Route{source: sourceConnFd, target: targets}
+			connMap[inboundFd] = Route{source: inboundFd, target: targets}
 		}
 	}()
 }
 
-func (p *Proxy) proxy(ep *utils.Epoll, ch chan *connData) {
+func (p *Proxy) epWait(ep *utils.Epoll, ch chan *connData) {
 	for {
 		connections, err := ep.Wait()
 		if err != nil {
@@ -330,7 +347,7 @@ func (p *Proxy) proxy(ep *utils.Epoll, ch chan *connData) {
 			cd := &connData{Fd: connFd, Data: buf[:n]}
 			// logger.Debugf("read in, size: %d, %s", n, cd.String())
 			ch <- cd
-			logger.Debugf("conn active fd: %d, size: %d", connFd, n)
+			logger.Debugf("conn active, fd: %d, data size: %d", connFd, n)
 		}
 	}
 }
@@ -339,19 +356,16 @@ func (p *Proxy) Split(split SplitFunc) {
 	p.split = split
 }
 
-func NewProxy(listenPort int, backendMain, backendReplicator, backendReplicatorMode string) *Proxy {
-	ep, err := utils.MkEpoll()
+func NewProxy(listenPort int, r *sync.Map) *Proxy {
+
 	if err != nil {
 		logger.Errorf("failed to create epoll, err: %v", err)
 		return nil
 	}
 	return &Proxy{
-		ListenPort:            listenPort,
-		BackendMain:           backendMain,
-		BackendReplicator:     backendReplicator,
-		BackendReplicatorMode: backendReplicatorMode,
-		Epoll:                 ep,
-		Connections:           &sync.Map{},
+		ListenPort:  listenPort,
+		Epoll:       ep,
+		Connections: &sync.Map{},
 	}
 }
 
@@ -369,6 +383,7 @@ func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 		for pConn.Scanner.Scan() {
 			key := pConn.Scanner.Key()
 			data := pConn.Scanner.Bytes()
+			logger.Debugf("scan key: %s, data: %s", string(key), string(data))
 			if len(data) == 0 {
 				break
 			}
@@ -378,6 +393,7 @@ func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 				for _, address := range rule.Backends {
 					connFd := addressFd[address]
 					bConn := proxyConnections[connFd]
+					logger.Debugf("send to backend, address: %s, fd: %d, b conn: %v", address, connFd, bConn)
 					bConn.Conn.Write(data)
 				}
 			}
