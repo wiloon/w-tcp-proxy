@@ -32,7 +32,9 @@ func main() {
 	)
 
 	logger.Debugf("project name: %s", cfg.Project.Name)
+
 	r := route.Init()
+
 	p := proxy.NewProxy(cfg.Project.Port, r)
 	p.Split(split0)
 	p.TokenHandler(tkHandler)
