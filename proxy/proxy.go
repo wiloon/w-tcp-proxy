@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/wiloon/w-tcp-proxy/config"
-	"github.com/wiloon/w-tcp-proxy/route"
 	"github.com/wiloon/w-tcp-proxy/utils"
 	"github.com/wiloon/w-tcp-proxy/utils/logger"
 	"net"
@@ -21,15 +20,6 @@ type Proxy struct {
 	Connections  *sync.Map
 	split        SplitFunc
 	tokenHandler TokenHandlerFunc
-}
-
-// proxy connection, inbound connection, backend connection
-type proxyConnection struct {
-	Address string
-	Fd      int
-	Conn    net.Conn
-	Scanner *Scanner
-	Mode    string
 }
 
 type BackendServer struct {
@@ -388,8 +378,8 @@ func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 				break
 			}
 			// get backend by key
-			if r, ok := route.RuleMap.Load(string(key)); ok {
-				rule := r.(route.Rule)
+			if r, ok := RuleMap.Load(string(key)); ok {
+				rule := r.(Rule)
 				for _, address := range rule.Backends {
 					connFd := addressFd[address]
 					bConn := proxyConnections[connFd]

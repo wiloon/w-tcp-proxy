@@ -1,4 +1,4 @@
-package route
+package proxy
 
 import (
 	"github.com/wiloon/w-tcp-proxy/config"
@@ -17,6 +17,7 @@ func Init() *sync.Map {
 	var backends = make(map[string]string)
 	for _, v := range config.Instance.Backends {
 		backends[v.Id] = v.Address
+		bc := backendConn{Id: v.Id, addressFd: v.Address}
 	}
 	var backendAddressList []string
 	for _, v := range config.Instance.Route {
