@@ -4,15 +4,11 @@ import "net"
 
 // Connection inbound connection, backend connection
 type Connection struct {
+	Id      string
 	Address string
 	Fd      int
 	Conn    net.Conn
 	Scanner *Scanner
-}
-
-type BackendConn struct {
-	Connection
-	Id string
 }
 
 // key: fd, value: proxyConnection

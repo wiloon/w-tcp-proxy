@@ -1,31 +1,39 @@
 package proxy
 
 import (
+	"github.com/wiloon/w-tcp-proxy/utils"
 	"net"
 	"sync"
 
 	"github.com/wiloon/w-tcp-proxy/config"
 	"github.com/wiloon/w-tcp-proxy/utils/logger"
 )
+
 type Route struct {
 	source int
 	target []int
-	Split  SplitFunc
-	backends  map[string]string
+	// key: backend conn id, value: address
+	// key="0", value="192.168.50.100:2000"
+	backends map[string]string
 }
 
-func (r *Route) InitBackendConn(split  SplitFunc){
-	r.Split=split
+func (r *Route) InitBackendConn(split SplitFunc) {
 	// dial
-	for i,v:=range r.backends{
+	for i, v := range r.backends {
 		logger.Infof("create backend conn")
-		conn,err:=net.Dial("tcp4",v)
-		if err!=nil{
-			logger.err
+		// todo retry
+		conn, err := net.Dial("tcp4", v)
+		if err != nil {
+			logger.Errorf("failed to dial backend server: %v", err)
+			return
 		}
+		fd := utils.SocketFD(conn)
+		scanner := NewScanner(make([]byte, 4096))
+		scanner.split = split
+		proxyConnections[fd] = &Connection{Conn: conn, Fd: fd, Id: i, Address: v, Scanner: scanner}
 	}
-	
 }
+
 type Rule struct {
 	Key      string
 	Backends []string
@@ -38,7 +46,7 @@ func InitRoute() *Route {
 	for _, v := range config.Instance.Backends {
 		backends[v.Id] = v.Address
 		bc := BackendConn{Id: v.Id}
-		bc.Address=v.Address
+		bc.Address = v.Address
 	}
 	var backendAddressList []string
 	for _, v := range config.Instance.Route {

@@ -15,7 +15,7 @@ type TokenHandlerFunc func(token []byte)
 var epoll *utils.Epoll
 
 type Proxy struct {
-	ListenPort int
+	ListenPort   int
 	Connections  *sync.Map
 	split        SplitFunc
 	tokenHandler TokenHandlerFunc
@@ -212,7 +212,6 @@ func (c *connData) String() string {
 	return fmt.Sprintf("fd: %d, data: %s", c.Fd, hex.EncodeToString(c.Data))
 }
 
-
 var connMap = make(map[int]Route)
 var addressFd = make(map[string]int)
 
@@ -242,7 +241,10 @@ func (p *Proxy) Start() {
 			inboundFd := utils.SocketFD(inboundConn)
 			logger.Infof("inbound conn: fd: %d, %s<>%s", inboundFd, inboundConn.LocalAddr().String(), inboundConn.RemoteAddr().String())
 
-			proxyConnections[inboundFd] = NewProxyConn(inboundFd, inboundConn, p.split, "")
+			scanner := NewScanner(make([]byte, 4096))
+			scanner.split = p.split
+			proxyConnections[inboundFd] = &Connection{Conn: inboundConn, Fd: inboundFd, Id: "", Address: inboundConn.RemoteAddr().String(), Scanner: scanner}
+
 			if err := p.Epoll.Add(inboundConn); err != nil {
 				logger.Errorf("failed to add connection %v", err)
 				// todo close conn peer
@@ -344,7 +346,7 @@ func (p *Proxy) Split(split SplitFunc) {
 
 func (p *Proxy) BindRoute(r *Route) {
 	p.Route = r
-	p.Route.InitBackendConn(r.Split)
+	p.Route.InitBackendConn(p.split)
 }
 
 func NewProxy(listenPort int) *Proxy {
