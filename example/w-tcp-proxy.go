@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+
 	"github.com/wiloon/w-tcp-proxy/config"
 	"github.com/wiloon/w-tcp-proxy/proxy"
 	"github.com/wiloon/w-tcp-proxy/utils"
@@ -32,10 +33,11 @@ func main() {
 
 	logger.Debugf("project name: %s", cfg.Project.Name)
 
-	r := proxy.Init()
+	route := proxy.InitRoute()
 
-	p := proxy.NewProxy(cfg.Project.Port, r)
+	p := proxy.NewProxy(cfg.Project.Port)
 	p.Split(split0)
+	p.BindRoute(route)
 	p.TokenHandler(tkHandler)
 	p.Start()
 

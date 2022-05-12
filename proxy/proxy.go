@@ -16,10 +16,10 @@ var epoll *utils.Epoll
 
 type Proxy struct {
 	ListenPort int
-
 	Connections  *sync.Map
 	split        SplitFunc
 	tokenHandler TokenHandlerFunc
+	Route        *Route
 }
 
 type BackendServer struct {
@@ -212,10 +212,6 @@ func (c *connData) String() string {
 	return fmt.Sprintf("fd: %d, data: %s", c.Fd, hex.EncodeToString(c.Data))
 }
 
-type Route struct {
-	source int
-	target []int
-}
 
 var connMap = make(map[int]Route)
 var addressFd = make(map[string]int)
@@ -346,7 +342,12 @@ func (p *Proxy) Split(split SplitFunc) {
 	p.split = split
 }
 
-func NewProxy(listenPort int, r *sync.Map) *Proxy {
+func (p *Proxy) BindRoute(r *Route) {
+	p.Route = r
+	p.Route.InitBackendConn(r.Split)
+}
+
+func NewProxy(listenPort int) *Proxy {
 
 	if err != nil {
 		logger.Errorf("failed to create epoll, err: %v", err)

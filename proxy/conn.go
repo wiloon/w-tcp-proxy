@@ -10,7 +10,7 @@ type Connection struct {
 	Scanner *Scanner
 }
 
-type backendConn struct {
+type BackendConn struct {
 	Connection
 	Id string
 }
