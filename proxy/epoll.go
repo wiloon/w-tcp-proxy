@@ -1,13 +1,25 @@
-package utils
+package proxy
 
 import (
+	"github.com/wiloon/w-tcp-proxy/utils"
 	"github.com/wiloon/w-tcp-proxy/utils/logger"
 	"golang.org/x/sys/unix"
 	"net"
-	"reflect"
 	"sync"
 	"syscall"
 )
+
+var Ep *Epoll
+
+func init() {
+	var err error
+	Ep, err = MkEpoll()
+	if err != nil {
+		logger.Errorf("failed to create epoll, err: %v", err)
+		panic("epoll error")
+	}
+
+}
 
 type Epoll struct {
 	Fd          int
@@ -29,7 +41,7 @@ func MkEpoll() (*Epoll, error) {
 
 func (e *Epoll) Add(conn net.Conn) error {
 	// Extract file descriptor associated with the connection
-	fd := SocketFD(conn)
+	fd := utils.SocketFD(conn)
 	err := unix.EpollCtl(e.Fd, syscall.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
 	if err != nil {
 		return err
@@ -43,7 +55,7 @@ func (e *Epoll) Add(conn net.Conn) error {
 	return nil
 }
 func (e *Epoll) Remove(conn net.Conn) error {
-	fd := SocketFD(conn)
+	fd := utils.SocketFD(conn)
 	err := unix.EpollCtl(e.Fd, syscall.EPOLL_CTL_DEL, fd, nil)
 	if err != nil {
 		logger.Errorf("failed to delete fd: %d, err: %v", fd, err)
@@ -71,16 +83,4 @@ func (e *Epoll) Wait() ([]net.Conn, error) {
 		connections = append(connections, conn)
 	}
 	return connections, nil
-}
-func SocketFD(conn net.Conn) int {
-	//tls := reflect.TypeOf(conn.UnderlyingConn()) == reflect.TypeOf(&tls.Conn{})
-	// Extract the file descriptor associated with the connection
-	//connVal := reflect.Indirect(reflect.ValueOf(conn)).FieldByName("conn").Elem()
-	tcpConn := reflect.Indirect(reflect.ValueOf(conn)).FieldByName("conn")
-	//if tls {
-	//	tcpConn = reflect.Indirect(tcpConn.Elem())
-	//}
-	fdVal := tcpConn.FieldByName("fd")
-	pfdVal := reflect.Indirect(fdVal).FieldByName("pfd")
-	return int(pfdVal.FieldByName("Sysfd").Int())
 }

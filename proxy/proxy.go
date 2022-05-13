@@ -3,7 +3,6 @@ package proxy
 import (
 	"encoding/hex"
 	"fmt"
-	"github.com/wiloon/w-tcp-proxy/config"
 	"github.com/wiloon/w-tcp-proxy/utils"
 	"github.com/wiloon/w-tcp-proxy/utils/logger"
 	"net"
@@ -12,14 +11,12 @@ import (
 
 type TokenHandlerFunc func(token []byte)
 
-var epoll *utils.Epoll
-
 type Proxy struct {
-	ListenPort   int
-	Connections  *sync.Map
-	split        SplitFunc
-	tokenHandler TokenHandlerFunc
-	Route        *Route
+	ListenPort      int
+	ConnectionGroup sync.Map
+	split           SplitFunc
+	tokenHandler    TokenHandlerFunc
+	Route           *Route
 }
 
 type BackendServer struct {
@@ -216,8 +213,6 @@ var connMap = make(map[int]Route)
 var addressFd = make(map[string]int)
 
 func (p *Proxy) Start() {
-	var err error
-	Epoll, err = utils.MkEpoll()
 	utils.SetNoFileLimit(10000, 20000)
 	inboundListener, err := net.Listen("tcp", fmt.Sprintf(":%d", p.ListenPort))
 	if err != nil {
@@ -228,7 +223,7 @@ func (p *Proxy) Start() {
 
 	ch0 := make(chan *connData, 100)
 
-	go p.epWait(p.Epoll, ch0)
+	go p.epWait(ch0)
 
 	go p.consume(ch0, p.Connections)
 
@@ -238,47 +233,14 @@ func (p *Proxy) Start() {
 			if err != nil {
 				return
 			}
-			inboundFd := utils.SocketFD(inboundConn)
-			logger.Infof("inbound conn: fd: %d, %s<>%s", inboundFd, inboundConn.LocalAddr().String(), inboundConn.RemoteAddr().String())
-
-			scanner := NewScanner(make([]byte, 4096))
-			scanner.split = p.split
-			proxyConnections[inboundFd] = &Connection{Conn: inboundConn, Fd: inboundFd, Id: "", Address: inboundConn.RemoteAddr().String(), Scanner: scanner}
-
-			if err := p.Epoll.Add(inboundConn); err != nil {
-				logger.Errorf("failed to add connection %v", err)
-				// todo close conn peer
-			}
-
-			var targets []int
-			for _, v := range config.Instance.Backends {
-				// create conn to all backend
-				conn, err := net.Dial("tcp4", v.Address)
-				if err != nil {
-					logger.Errorf("failed to dial backend server %v", err)
-					return
-				}
-				fd := utils.SocketFD(conn)
-				proxyConnections[fd] = NewProxyConn(fd, conn, p.split, "")
-				targets = append(targets, fd)
-				connMap[fd] = Route{source: fd, target: []int{inboundFd}}
-
-				if err := p.Epoll.Add(conn); err != nil {
-					logger.Errorf("failed to add connection %v", err)
-					// todo close conn peer
-				}
-				addressFd[v.Address] = fd
-				logger.Infof("backend conn, fd: %d, %s<>%s",
-					fd, conn.LocalAddr().String(), conn.RemoteAddr().String())
-			}
-			connMap[inboundFd] = Route{source: inboundFd, target: targets}
+			go p.inboundConnHandler(inboundConn)
 		}
 	}()
 }
 
-func (p *Proxy) epWait(ep *utils.Epoll, ch chan *connData) {
+func (p *Proxy) epWait(ch chan *connData) {
 	for {
-		connections, err := ep.Wait()
+		connections, err := Ep.Wait()
 		if err != nil {
 			logger.Debugf("epoll failed to wait: %v", err)
 			continue
@@ -294,15 +256,29 @@ func (p *Proxy) epWait(ep *utils.Epoll, ch chan *connData) {
 			var buf = make([]byte, 4096)
 			n, readErr := conn.Read(buf)
 			if readErr != nil {
+				// close connections
 				logger.Errorf("failed to read conn: %s, err: %v", conn.RemoteAddr().String(), readErr)
-				if err := ep.Remove(conn); err != nil {
+				p.CloseConn(connFd)
+
+				c, exist := proxyConnections.Load(connFd)
+				if !exist {
+					logger.Warnf("conn not found")
+				}
+				cc := c.(Connection)
+				if !cc.Backend {
+					// inbound conn
+					// close all conn
+
+				}
+
+				if err := Ep.Remove(conn); err != nil {
 					logger.Errorf("failed to remove %v", err)
 				}
 				logger.Infof("remove conn from epoll: %s<>%s", conn.LocalAddr().String(), conn.RemoteAddr().String())
 
 				if tmp, ok := p.Connections.Load(connFd); ok {
 					pc := tmp.(*proxyGroup)
-					if connFd == pc.InboundConn.Fd {
+					if connFd == pc.BackendMainConn {
 						// close all
 						removeConnFromEp(ep, pc.BackendMainConn.Conn)
 						pc.BackendMainConn.Conn.Close()
@@ -346,18 +322,12 @@ func (p *Proxy) Split(split SplitFunc) {
 
 func (p *Proxy) BindRoute(r *Route) {
 	p.Route = r
-	p.Route.InitBackendConn(p.split)
+	// p.Route.InitBackendConn(p.split)
 }
 
 func NewProxy(listenPort int) *Proxy {
-
-	if err != nil {
-		logger.Errorf("failed to create epoll, err: %v", err)
-		return nil
-	}
 	return &Proxy{
 		ListenPort:  listenPort,
-		Epoll:       ep,
 		Connections: &sync.Map{},
 	}
 }
@@ -369,7 +339,12 @@ func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 		logger.Debugf("consume fd: %d", fd)
 
 		// append data to buffer
-		pConn := proxyConnections[cd.Fd]
+		c, ok := proxyConnections.Load(cd.Fd)
+		if !ok {
+			logger.Warnf("conn not dound: %d", cd.Fd)
+			continue
+		}
+		pConn := c.(Connection)
 		pConn.Scanner.appendBuf(cd.Data)
 		//pConn.appendBuf(cd.Fd, cd.Data)
 
@@ -381,13 +356,22 @@ func (p *Proxy) consume(ch chan *connData, connMap *sync.Map) {
 				break
 			}
 			// get backend by key
-			if r, ok := RuleMap.Load(string(key)); ok {
+			if r, ok := p.Route.Rules.Load(string(key)); ok {
 				rule := r.(Rule)
-				for _, address := range rule.Backends {
-					connFd := addressFd[address]
-					bConn := proxyConnections[connFd]
-					logger.Debugf("send to backend, address: %s, fd: %d, b conn: %v", address, connFd, bConn)
-					bConn.Conn.Write(data)
+				for _, backendConnConfig := range rule.Backends {
+					pc, ok := p.ConnectionGroup.Load(backendConnConfig.RouteId)
+					if !ok {
+						logger.Errorf("route id not found: %d", backendConnConfig.RouteId)
+					}
+					pcc := pc.(Connection)
+					c, exist := proxyConnections.Load(pcc.Fd)
+					if !exist {
+						logger.Warnf("conn not found: %d", pcc.Fd)
+						continue
+					}
+					backendConn := c.(Connection)
+					logger.Debugf("send to backend: %+v", backendConn)
+					backendConn.Conn.Write(data)
 				}
 			}
 		}
@@ -404,4 +388,98 @@ func removeConnFromEp(ep *utils.Epoll, conn net.Conn) {
 		logger.Errorf("failed to remove %v", err)
 	}
 	logger.Infof("remove conn from epoll: %s<>%s", conn.LocalAddr().String(), conn.RemoteAddr().String())
+}
+
+const routeIdInbound = "-1"
+
+func (p *Proxy) inboundConnHandler(inboundConn net.Conn) {
+	inboundFd := utils.SocketFD(inboundConn)
+	logger.Infof("inbound conn: fd: %d, %s<>%s", inboundFd, inboundConn.LocalAddr().String(), inboundConn.RemoteAddr().String())
+
+	scanner := NewScanner(make([]byte, 4096))
+	scanner.split = p.split
+
+	pc := &Connection{
+		Conn:    inboundConn,
+		Fd:      inboundFd,
+		RouteId: routeIdInbound,
+		Address: inboundConn.RemoteAddr().String(),
+		Scanner: scanner,
+	}
+	proxyConnections.Store(
+		inboundFd,
+		pc,
+	)
+	p.ConnectionGroup.Store(pc.RouteId, pc)
+	// create backend conn, for all backend conn
+	for k, ConnConfig := range p.Route.backends {
+		// todo retry
+		backendConn, err := net.Dial("tcp4", v.Address)
+		if err != nil {
+			logger.Errorf("failed to dial backend server: %v", err)
+			return
+		}
+		fd := utils.SocketFD(backendConn)
+		scanner := NewScanner(make([]byte, 4096))
+		scanner.split = p.split
+
+		bpc := &Connection{
+			Conn:    backendConn,
+			Fd:      fd,
+			RouteId: ConnConfig.RouteId,
+			Address: inboundConn.RemoteAddr().String(),
+			Scanner: scanner,
+		}
+		proxyConnections.Store(
+			fd,
+			bpc,
+		)
+		p.ConnectionGroup.Store(bpc.RouteId, bpc)
+		if err := Ep.Add(backendConn); err != nil {
+			logger.Errorf("failed to add connection %v", err)
+			// todo close conn peer
+		}
+		logger.Infof("backend backendConn created, id: %v", k)
+	}
+	if err := Ep.Add(inboundConn); err != nil {
+		logger.Errorf("failed to add connection %v", err)
+		// todo close conn peer
+	}
+}
+
+func (p *Proxy) CloseConn(fd int) {
+	// get conn by fd
+	c, ok := proxyConnections.Load(fd)
+	if !ok {
+		logger.Warnf("conn not found fd: %d", fd)
+		return
+	}
+	cc := c.(Connection)
+	if cc.Backend == false || (cc.Backend == true && cc.Default == true) {
+		//  if inbound conn, close all
+		// if default backend conn, close all
+		p.ConnectionGroup.Range(func(key, value any) bool {
+			v := value.(Connection)
+			// remove from epoll
+			Ep.Remove(v.Conn)
+			// close conn
+			v.Conn.Close()
+			return true
+		})
+
+	} else if cc.Backend == true && cc.Default == false {
+		// if other backend conn,
+		//		if forward mode, forward data to default backend, update route
+		// mock login
+		// keep conn, copy heart beat
+		p.ConnectionGroup.Range(func(key, value any) bool {
+			if value.(Connection).Default {
+				p.Route.UpdateRule(value.(Connection))
+			}
+			return true
+		})
+	}
+
+	//		if copy mode, retry, do nothing
+
 }

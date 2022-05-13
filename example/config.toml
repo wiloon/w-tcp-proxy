@@ -19,7 +19,8 @@ Default = false
 
 [[Route]]
 Key = 'key0'
-BackendId = ['0', '1']
+Type = 'copy'
 [[Route]]
 Key = 'key1'
-BackendId = ['0']
+Type = 'forward'
+BackendId = '1'

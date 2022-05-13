@@ -1,63 +1,57 @@
 package proxy
 
 import (
-	"github.com/wiloon/w-tcp-proxy/utils"
-	"net"
 	"sync"
 
 	"github.com/wiloon/w-tcp-proxy/config"
-	"github.com/wiloon/w-tcp-proxy/utils/logger"
 )
 
 type Route struct {
 	source int
 	target []int
 	// key: backend conn id, value: address
-	// key="0", value="192.168.50.100:2000"
-	backends map[string]string
+	// key = id, value = Connection
+	backends map[string]*Connection
+	Rules    sync.Map
 }
 
-func (r *Route) InitBackendConn(split SplitFunc) {
-	// dial
-	for i, v := range r.backends {
-		logger.Infof("create backend conn")
-		// todo retry
-		conn, err := net.Dial("tcp4", v)
-		if err != nil {
-			logger.Errorf("failed to dial backend server: %v", err)
-			return
+func (r *Route) UpdateRule(c Connection) {
+	r.Rules.Range(func(key, value any) bool {
+		rule := value.(Rule)
+		if rule.Type == routeTypeForward {
+			rule.Backends[0] = c
 		}
-		fd := utils.SocketFD(conn)
-		scanner := NewScanner(make([]byte, 4096))
-		scanner.split = split
-		proxyConnections[fd] = &Connection{Conn: conn, Fd: fd, Id: i, Address: v, Scanner: scanner}
-	}
+		return true
+	})
 }
 
 type Rule struct {
 	Key      string
-	Backends []string
+	Type     string
+	Backends []Connection
 }
 
-var RuleMap = sync.Map{}
+const routeTypeCopy = "copy"
+const routeTypeForward = "forward"
 
 func InitRoute() *Route {
-	var backends = make(map[string]string)
-	for _, v := range config.Instance.Backends {
-		backends[v.Id] = v.Address
-		bc := BackendConn{Id: v.Id}
-		bc.Address = v.Address
-	}
-	var backendAddressList []string
-	for _, v := range config.Instance.Route {
+	r := Route{}
+	r.backends = make(map[string]*Connection)
 
-		for _, id := range v.BackendId {
-			backendAddress := backends[id]
-			logger.Debugf("route init, key: %s,backend address: %s", v.Key, backendAddress)
-			backendAddressList = append(backendAddressList, backendAddress)
+	for _, v := range config.Instance.Backends {
+		r.backends[v.Id] = &Connection{RouteId: v.Id, Address: v.Address, Backend: true, Default: v.Default}
+	}
+
+	for _, v := range config.Instance.Route {
+		rule := Rule{Key: v.Key}
+		rule.Type = v.Type
+		if v.Type == routeTypeCopy {
+			for _, backendConnConfig := range r.backends {
+				rule.Backends = append(rule.Backends, *backendConnConfig)
+			}
+		} else if v.Type == routeTypeForward {
+			rule.Backends = append(rule.Backends, *r.backends[v.BackendId])
 		}
-		r := Rule{Key: v.Key, Backends: backendAddressList}
-		RuleMap.Store(v.Key, r)
 	}
 	return nil
 }

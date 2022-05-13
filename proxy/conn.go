@@ -1,15 +1,27 @@
 package proxy
 
-import "net"
+import (
+	"net"
+	"sync"
+)
 
 // Connection inbound connection, backend connection
 type Connection struct {
-	Id      string
+	// connection id from config file
+	RouteId string
+	// ip:port
 	Address string
-	Fd      int
-	Conn    net.Conn
+	// fd
+	Fd int
+	// go conn
+	Conn net.Conn
+	// buf scanner
 	Scanner *Scanner
+	// is backend conn
+	Backend bool
+	// is default backend conn
+	Default bool
 }
 
 // key: fd, value: proxyConnection
-var proxyConnections = make(map[int]*Connection)
+var proxyConnections = sync.Map{}

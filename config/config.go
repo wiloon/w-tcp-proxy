@@ -33,7 +33,8 @@ type Backend struct {
 }
 type Route struct {
 	Key       string
-	BackendId []string
+	Type      string
+	BackendId string
 }
 type WTcpProxyConfig struct {
 	Project  Project
