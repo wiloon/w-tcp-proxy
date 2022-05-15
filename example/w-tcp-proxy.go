@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-
 	"github.com/wiloon/w-tcp-proxy/config"
 	"github.com/wiloon/w-tcp-proxy/proxy"
 	"github.com/wiloon/w-tcp-proxy/utils"
