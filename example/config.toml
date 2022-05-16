@@ -4,9 +4,10 @@ Port = 2000
 
 [Log]
 Console = true
+# info, debug
 ConsoleLevel = 'debug'
 File = true
-FileLevel = 'debug'
+FileLevel = 'info'
 
 [[Backends]]
 Id = '0'
