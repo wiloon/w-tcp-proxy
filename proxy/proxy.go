@@ -24,75 +24,6 @@ type BackendServer struct {
 	Default bool
 }
 
-const proxyModeCopy = "copy"
-const proxyModeForward = "forward"
-
-func (c proxyConnection) isForwardMode() bool {
-	if c.Mode == proxyModeForward {
-		return true
-	}
-	return false
-}
-
-func (c proxyConnection) Dial() {
-	// create conn to all backend
-	conn, err := net.Dial("tcp4", c.Address)
-	if err != nil {
-		logger.Errorf("failed to dial backend server %v", err)
-		return
-	}
-	fd := utils.SocketFD(conn)
-
-	pc := proxyConnection{
-		Fd:      fd,
-		Conn:    conn,
-		Scanner: NewScanner(make([]byte, 4096)),
-	}
-	pc.Scanner.Split(split)
-
-	proxyConnections[fd] = &pc
-
-	if err := epoll.Add(conn); err != nil {
-		logger.Errorf("failed to add connection %v", err)
-		// todo close conn peer
-	}
-	addressFd[c.Address] = fd
-	logger.Infof("backend conn, fd: %d, %s<>%s",
-		fd, conn.LocalAddr().String(), conn.RemoteAddr().String())
-}
-
-type proxyGroup struct {
-	InboundConn           *proxyConnection
-	BackendMainConn       *proxyConnection
-	BackendReplicatorConn *proxyConnection
-}
-
-func (pc *proxyGroup) Close() {
-	err := pc.InboundConn.Conn.Close()
-	if err != nil {
-		logger.Errorf("failed to close conn: %v", pc.InboundConn.Conn.RemoteAddr().String())
-	}
-	err = pc.BackendMainConn.Conn.Close()
-	if err != nil {
-		logger.Errorf("failed to close conn: %v", pc.BackendMainConn.Conn.RemoteAddr().String())
-	}
-	err = pc.BackendReplicatorConn.Conn.Close()
-	if err != nil {
-		logger.Errorf("failed to close conn: %v", pc.BackendReplicatorConn.Conn.RemoteAddr().String())
-	}
-}
-
-func (pc *proxyGroup) appendBuf(fd int, data []byte) {
-	if fd == pc.InboundConn.Fd {
-		pc.InboundConn.Scanner.appendBuf(data)
-	} else if fd == pc.BackendMainConn.Fd {
-		pc.BackendMainConn.Scanner.appendBuf(data)
-	} else {
-		if pc.BackendReplicatorConn.isForwardMode() {
-			pc.BackendReplicatorConn.Scanner.appendBuf(data)
-		}
-	}
-}
 
 type connData struct {
 	Fd   int
@@ -102,9 +33,6 @@ type connData struct {
 func (c *connData) String() string {
 	return fmt.Sprintf("fd: %d, data: %s", c.Fd, hex.EncodeToString(c.Data))
 }
-
-var connMap = make(map[int]Route)
-var addressFd = make(map[string]int)
 
 func (p *Proxy) Start() {
 
@@ -296,7 +224,7 @@ func (p *Proxy) CloseConn(fd int) {
 		return
 	}
 	cc := c.(Connection)
-	if cc.Backend == false || (cc.Backend == true && cc.Default == true) {
+	if !cc.Backend || (cc.Backend && cc.Default) {
 		// if inbound conn, close all
 		// if default backend conn, close all
 		p.ConnectionGroup.Range(func(key, value any) bool {
@@ -308,7 +236,7 @@ func (p *Proxy) CloseConn(fd int) {
 			return true
 		})
 
-	} else if cc.Backend == true && cc.Default == false {
+	} else if cc.Backend && !cc.Default {
 		// if other backend conn,
 		//		if forward mode, forward data to default backend, update route
 		// mock login

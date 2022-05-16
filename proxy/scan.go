@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 )
 
-const minReadBufferSize = 16
 const maxConsecutiveEmptyReads = 100
 
 // Scanner provides a convenient interface for reading data such as
@@ -30,7 +29,7 @@ const maxConsecutiveEmptyReads = 100
 // on a reader, should use bufio.Reader instead.
 //
 type Scanner struct {
-	r            io.Reader // The reader provided by the client.
+	// r            io.Reader // The reader provided by the client.
 	split        SplitFunc // The function to split the tokens.
 	maxTokenSize int       // Maximum size of a token; modified by tests.
 	key          []byte
@@ -215,7 +214,6 @@ func (s *Scanner) Scan() bool {
 			s.end -= s.start
 			s.start = 0
 		}
-		return false
 	}
 }
 
@@ -339,12 +337,12 @@ func ScanRunes(data []byte, atEOF bool) (advance int, token []byte, err error) {
 }
 
 // dropCR drops a terminal \r from the data.
-func dropCR(data []byte) []byte {
-	if len(data) > 0 && data[len(data)-1] == '\r' {
-		return data[0 : len(data)-1]
-	}
-	return data
-}
+// func dropCR(data []byte) []byte {
+// 	if len(data) > 0 && data[len(data)-1] == '\r' {
+// 		return data[0 : len(data)-1]
+// 	}
+// 	return data
+// }
 
 // isSpace reports whether the character is a Unicode white space character.
 // We avoid dependency on the unicode package, but check validity of the implementation

@@ -15,8 +15,8 @@ func Test0(t *testing.T) {
 			{Id: "1", Address: "192.168.0.2"},
 		},
 		Route: []Route{
-			{Key: "key0", BackendId: []string{"0", "1"}},
-			{Key: "key1", BackendId: []string{"0"}},
+			{Key: "key0", Type: "copy"},
+			{Key: "key1", Type: "forward", BackendId: "0"},
 		},
 	}
 

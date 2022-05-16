@@ -23,5 +23,8 @@ type Connection struct {
 	Default bool
 }
 
+func (c *Connection) Dial() {
+	
+}
 // key: fd, value: proxyConnection
 var proxyConnections = sync.Map{}

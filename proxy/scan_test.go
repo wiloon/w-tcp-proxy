@@ -22,7 +22,8 @@ func Test(t *testing.T) {
 		fmt.Println(data)
 	}
 }
-func split0(data []byte, eof bool) (advance int, token []byte, err error) {
+func split0(data []byte, eof bool) (advance int, key,token []byte, err error) {
 	token = data
-	return len(data), token, err
+	key=[]byte("key0")
+	return len(data), key,token, err
 }

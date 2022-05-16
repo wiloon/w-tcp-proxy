@@ -7,8 +7,6 @@ import (
 )
 
 type Route struct {
-	source int
-	target []int
 	// key: backend conn id, value: address
 	// key = id, value = Connection
 	backends map[string]*Connection
