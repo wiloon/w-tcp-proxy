@@ -176,6 +176,8 @@ func (s *Scanner) Scan() bool {
 				}
 				return true
 			}
+		} else if s.end == s.start {
+			return false
 		}
 		// We cannot generate a token with what we are holding.
 		// If we've already hit EOF or an I/O error, we are done.

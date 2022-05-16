@@ -1,9 +1,9 @@
 package proxy
 
 import (
-	"sync"
-
 	"github.com/wiloon/w-tcp-proxy/config"
+	"github.com/wiloon/w-tcp-proxy/utils/logger"
+	"sync"
 )
 
 type Route struct {
@@ -38,6 +38,7 @@ func InitRoute() *Route {
 
 	for _, v := range config.Instance.Backends {
 		r.backends[v.Id] = &Connection{RouteId: v.Id, Address: v.Address, Backend: true, Default: v.Default}
+		logger.Debug("route backend, id: %s, address: %s", v.Id, v.Address)
 	}
 
 	for _, v := range config.Instance.Route {
@@ -50,6 +51,8 @@ func InitRoute() *Route {
 		} else if v.Type == routeTypeForward {
 			rule.Backends = append(rule.Backends, *r.backends[v.BackendId])
 		}
+		r.Rules.Store(v.Key, rule)
+		logger.Debugf("rule, key: %s, type: %s", v.Key, v.Type)
 	}
-	return nil
+	return &r
 }

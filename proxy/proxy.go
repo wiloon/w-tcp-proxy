@@ -24,7 +24,6 @@ type BackendServer struct {
 	Default bool
 }
 
-
 type connData struct {
 	Fd   int
 	Data []byte
@@ -35,7 +34,6 @@ func (c *connData) String() string {
 }
 
 func (p *Proxy) Start() {
-
 	// set file limit
 	utils.SetNoFileLimit(10000, 20000)
 
@@ -81,7 +79,6 @@ func (p *Proxy) epWait(ch chan *connData) {
 				// close connections
 				logger.Errorf("failed to read conn: %s, err: %v", conn.RemoteAddr().String(), readErr)
 				p.CloseConn(connFd)
-
 				continue
 			}
 
@@ -115,44 +112,78 @@ func (p *Proxy) consume(ch chan *connData) {
 		logger.Debugf("consume fd: %d", fd)
 
 		// append data to buffer
-		c, ok := proxyConnections.Load(cd.Fd)
+		c, ok := proxyConnections.Load(fd)
 		if !ok {
 			logger.Warnf("conn not dound: %d", cd.Fd)
 			continue
 		}
-		pConn := c.(Connection)
+		pConn := c.(*Connection)
+
 		pConn.Scanner.appendBuf(cd.Data)
 		//pConn.appendBuf(cd.Fd, cd.Data)
 
 		for pConn.Scanner.Scan() {
 			key := pConn.Scanner.Key()
 			data := pConn.Scanner.Bytes()
-			logger.Debugf("scan key: %s, data: %s", string(key), string(data))
+			logger.Debugf("scan, key: %s, data: %s", string(key), string(data))
 			if len(data) == 0 {
 				break
 			}
 			// get backend by key
-			if r, ok := p.Route.Rules.Load(string(key)); ok {
+			if r, ruleExist := p.Route.Rules.Load(string(key)); ruleExist {
 				rule := r.(Rule)
-				for _, backendConnConfig := range rule.Backends {
-					pc, ok := p.ConnectionGroup.Load(backendConnConfig.RouteId)
-					if !ok {
-						logger.Errorf("route id not found: %d", backendConnConfig.RouteId)
+				logger.Debugf("get rule by key, key: %s, rule: %+v", key, rule)
+
+				if !pConn.Backend {
+					// inbound conn
+					for _, backendConnConfig := range rule.Backends {
+						logger.Debugf("backend: %s", backendConnConfig.Address)
+						// pc, ok := p.ConnectionGroup.Load(backendConnConfig.RouteId)
+						m, routeIdMapExist := p.ConnectionGroup.Load(fd)
+						if !routeIdMapExist {
+							logger.Errorf("route id not found: %d", backendConnConfig.RouteId)
+						}
+						routeIdMap := m.(*sync.Map)
+						pc, pcExist := routeIdMap.Load(backendConnConfig.RouteId)
+						if !pcExist {
+							logger.Errorf("route id not found: %d", backendConnConfig.RouteId)
+						}
+
+						pcc := pc.(*Connection)
+						logger.Debugf("target conn, route id: %s, target fd: %d, address: %s",
+							backendConnConfig.RouteId, pcc.Fd, backendConnConfig.Address)
+						c, exist := proxyConnections.Load(pcc.Fd)
+						if !exist {
+							logger.Warnf("conn not found: %d", pcc.Fd)
+							continue
+						}
+						backendConn := c.(*Connection)
+
+						write, err := backendConn.Conn.Write(data)
+						if err != nil {
+							logger.Errorf("failed to write data: %v", err)
+							continue
+						}
+						logger.Debugf("send to backend: %s, size: %d", backendConn.Conn.RemoteAddr().String(), write)
 					}
-					pcc := pc.(Connection)
-					c, exist := proxyConnections.Load(pcc.Fd)
+				} else if rule.Type == routeTypeCopy && pConn.Backend && !pConn.Default {
+					// non default backend
+					// drop
+				} else {
+					// send to inbound
+					m, exist := p.ConnectionGroup.Load(fd)
 					if !exist {
-						logger.Warnf("conn not found: %d", pcc.Fd)
-						continue
+						logger.Debugf("inbound conn not found")
 					}
-					backendConn := c.(Connection)
-					logger.Debugf("send to backend: %+v", backendConn)
-					backendConn.Conn.Write(data)
+					mm := m.(*sync.Map)
+					if c, connExist := mm.Load(routeIdInbound); connExist {
+						cc := c.(*Connection)
+						cc.Conn.Write(data)
+					}
 				}
 			}
 		}
 	}
-	// logger.Debug("consume loop end.")
 }
 
 func (p *Proxy) TokenHandler(handler TokenHandlerFunc) {
@@ -174,41 +205,49 @@ func (p *Proxy) inboundConnHandler(inboundConn net.Conn) {
 		RouteId: routeIdInbound,
 		Address: inboundConn.RemoteAddr().String(),
 		Scanner: scanner,
+		Backend: false,
 	}
 	proxyConnections.Store(
 		inboundFd,
 		pc,
 	)
-	p.ConnectionGroup.Store(pc.RouteId, pc)
+	m := &sync.Map{}
+	m.Store(pc.RouteId, pc)
+	p.ConnectionGroup.Store(inboundFd, m)
+	logger.Debugf("inbound conn, route id: %v, fd: %d, address: %s", routeIdInbound, inboundFd, pc.Address)
 	// create backend conn, for all backend conn
-	for k, ConnConfig := range p.Route.backends {
+	for routeId, ConnConfig := range p.Route.backends {
 		// todo retry
 		backendConn, err := net.Dial("tcp4", ConnConfig.Address)
 		if err != nil {
 			logger.Errorf("failed to dial backend server: %v", err)
 			return
 		}
-		fd := utils.SocketFD(backendConn)
+		backendConnFd := utils.SocketFD(backendConn)
 		scanner := NewScanner(make([]byte, 4096))
 		scanner.split = p.split
 
 		bpc := &Connection{
 			Conn:    backendConn,
-			Fd:      fd,
+			Fd:      backendConnFd,
 			RouteId: ConnConfig.RouteId,
 			Address: inboundConn.RemoteAddr().String(),
 			Scanner: scanner,
+			Backend: true,
+			Default: ConnConfig.Default,
 		}
 		proxyConnections.Store(
-			fd,
+			backendConnFd,
 			bpc,
 		)
-		p.ConnectionGroup.Store(bpc.RouteId, bpc)
+		m.Store(bpc.RouteId, bpc)
+		p.ConnectionGroup.Store(backendConnFd, m)
+		// p.ConnectionGroup.Store(bpc.RouteId, bpc)
 		if err := Ep.Add(backendConn); err != nil {
 			logger.Errorf("failed to add connection %v", err)
 			// todo close conn peer
 		}
-		logger.Infof("backend backendConn created, id: %v", k)
+		logger.Infof("backend conn created, route id: %v, fd: %d, address: %s", routeId, backendConnFd, ConnConfig.Address)
 	}
 	if err := Ep.Add(inboundConn); err != nil {
 		logger.Errorf("failed to add connection %v", err)
@@ -223,16 +262,20 @@ func (p *Proxy) CloseConn(fd int) {
 		logger.Warnf("conn not found fd: %d", fd)
 		return
 	}
-	cc := c.(Connection)
+	cc := c.(*Connection)
 	if !cc.Backend || (cc.Backend && cc.Default) {
 		// if inbound conn, close all
 		// if default backend conn, close all
 		p.ConnectionGroup.Range(func(key, value any) bool {
-			v := value.(Connection)
-			// remove from epoll
-			Ep.Remove(v.Conn)
-			// close conn
-			v.Conn.Close()
+			m := value.(*sync.Map)
+			m.Range(func(key, value any) bool {
+				v := value.(*Connection)
+				// remove from epoll
+				Ep.Remove(v.Conn)
+				// close conn
+				v.Conn.Close()
+				return true
+			})
 			return true
 		})
 
